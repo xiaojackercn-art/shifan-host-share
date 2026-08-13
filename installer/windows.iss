@@ -1,6 +1,6 @@
 #define MyAppName "视饭AI:主机共享"
 #define MyShortcutName "视饭AI主机共享"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.8.0"
 #define MyAppPublisher "视饭AI"
 #define MyAppExeName "ShifanAI-HostShare.exe"
 #define DeskflowExe "engine\Deskflow\deskflow-core.exe"
@@ -37,18 +37,26 @@ Name: "{autoprograms}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; Wor
 Name: "{autodesktop}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Run]
-; v0.7: single-channel architecture. deskflow-core.exe is the actual process
-; that listens/connects on TCP 24800, so grant the firewall exception to that
-; binary itself as well as to the port. No custom 35999 pairing service remains.
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow程序-入站"; Flags: runhidden; StatusMsg: "正在配置 Deskflow 局域网权限..."
+; v0.8: the ShifanAI process owns the LAN-facing 0.0.0.0:24800 listener.
+; Deskflow server is loopback-only on 127.0.0.1:24810.  Therefore the main
+; executable itself needs the inbound LAN exception; deskflow-core only needs
+; outbound LAN access when this computer is the secondary/client.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-主程序-入站"; Flags: runhidden; StatusMsg: "正在配置视饭AI主机共享局域网权限..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-主程序-入站 dir=in action=allow program=""{app}\{#MyAppExeName}"" protocol=TCP localport=24800 remoteip=LocalSubnet profile=any enable=yes"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-主程序-出站"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-主程序-出站 dir=out action=allow program=""{app}\{#MyAppExeName}"" remoteip=LocalSubnet profile=any enable=yes"; Flags: runhidden
+
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow程序-入站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-Deskflow程序-入站 dir=in action=allow program=""{app}\{#DeskflowExe}"" remoteip=LocalSubnet profile=any enable=yes"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow程序-出站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-Deskflow程序-出站 dir=out action=allow program=""{app}\{#DeskflowExe}"" remoteip=LocalSubnet profile=any enable=yes"; Flags: runhidden
+
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow-入站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-Deskflow-入站 dir=in action=allow protocol=TCP localport=24800 remoteip=LocalSubnet profile=any enable=yes"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow-出站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-Deskflow-出站 dir=out action=allow protocol=TCP remoteport=24800 remoteip=LocalSubnet profile=any enable=yes"; Flags: runhidden
-; Remove all obsolete v0.1-v0.6 custom pairing rules.
+
+; Remove obsolete v0.1-v0.7 custom pairing and old keyboard-channel rules.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-配对服务-入站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-配对服务-出站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-程序-入站"; Flags: runhidden
@@ -58,6 +66,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-主程序-入站"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-主程序-出站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow程序-入站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow程序-出站"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-Deskflow-入站"; Flags: runhidden

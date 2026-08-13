@@ -13,6 +13,7 @@ from typing import Callable
 from .config import app_data_dir
 
 DESKFLOW_VERSION = "1.26.0"
+DEFAULT_PORT = 24800
 
 
 def resource_root() -> Path:
@@ -49,26 +50,29 @@ def reverse_direction(direction: str) -> str:
     return {"right": "left", "left": "right", "up": "down", "down": "up"}.get(direction, "left")
 
 
-def build_server_config(server_name: str, client_name: str, direction: str) -> str:
-    if direction not in {"right", "left", "up", "down"}:
-        raise ValueError("屏幕方向无效")
-    opposite = reverse_direction(direction)
-    return (
-        "section: screens\n"
-        f"    {server_name}:\n"
-        f"    {client_name}:\n"
-        "end\n\n"
-        "section: links\n"
-        f"    {server_name}:\n"
-        f"        {direction} = {client_name}\n"
-        f"    {client_name}:\n"
-        f"        {opposite} = {server_name}\n"
-        "end\n\n"
-        "section: options\n"
-        "    heartbeat = 3000\n"
-        "    switchDelay = 0\n"
-        "end\n"
-    )
+def build_server_config(server_name: str, peer_names: dict[str, str]) -> str:
+    required = {"left", "right", "up", "down"}
+    if set(peer_names) != required:
+        raise ValueError("必须提供左、右、上、下四个客户端名称")
+    lines = ["section: screens", f"    {server_name}:"]
+    for direction in ("left", "right", "up", "down"):
+        lines.append(f"    {peer_names[direction]}:")
+    lines.extend(["end", "", "section: links", f"    {server_name}:"])
+    for direction in ("left", "right", "up", "down"):
+        lines.append(f"        {direction} = {peer_names[direction]}")
+    for direction in ("left", "right", "up", "down"):
+        lines.append(f"    {peer_names[direction]}:")
+        lines.append(f"        {reverse_direction(direction)} = {server_name}")
+    lines.extend([
+        "end",
+        "",
+        "section: options",
+        "    heartbeat = 3000",
+        "    switchDelay = 0",
+        "end",
+        "",
+    ])
+    return "\n".join(lines)
 
 
 def _write_settings(
@@ -78,25 +82,30 @@ def _write_settings(
     port: int,
     remote_host: str = "",
     server_config: Path | None = None,
-    interface: str = "",
 ) -> None:
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.optionxform = str
-    core = {
+    cfg["core"] = {
         "computerName": computer_name,
         "port": str(int(port)),
-        "processMode": "1",  # Desktop mode; official Deskflow workaround avoids the Windows daemon path.
+        "processMode": "1",
         "useHooks": "true",
     }
-    if interface:
-        core["interface"] = interface
-    cfg["core"] = core
-    cfg["security"] = {"tlsEnabled": "false", "checkPeerFingerprints": "false"}
+    cfg["security"] = {
+        "tlsEnabled": "false",
+        "checkPeerFingerprints": "false",
+    }
     cfg["log"] = {"level": "4", "toFile": "false"}
     if remote_host:
-        cfg["client"] = {"remoteHost": remote_host, "languageSync": "true"}
+        cfg["client"] = {
+            "remoteHost": remote_host,
+            "languageSync": "true",
+        }
     if server_config is not None:
-        cfg["server"] = {"externalConfig": "true", "externalConfigFile": str(server_config)}
+        cfg["server"] = {
+            "externalConfig": "true",
+            "externalConfigFile": str(server_config),
+        }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         cfg.write(fh, space_around_delimiters=False)
@@ -147,7 +156,7 @@ class DeskflowEngine:
             self._client_connected = False
         self._terminate(proc)
 
-    def start_server(self, server_name: str, client_name: str, direction: str, port: int, listen_ip: str = "") -> tuple[bool, str]:
+    def start_server(self, server_name: str, peer_names: dict[str, str], port: int = DEFAULT_PORT) -> tuple[bool, str]:
         self.stop_all()
         path = core_path()
         if not path.exists():
@@ -156,17 +165,20 @@ class DeskflowEngine:
         runtime.mkdir(parents=True, exist_ok=True)
         server_config = runtime / "deskflow-server.conf"
         settings = runtime / "deskflow-server-settings.ini"
-        server_config.write_text(build_server_config(server_name, client_name, direction), "utf-8")
-        _write_settings(settings, computer_name=server_name, port=port, server_config=server_config, interface=listen_ip)
+        server_config.write_text(build_server_config(server_name, peer_names), "utf-8")
+        # Deliberately DO NOT set core/interface. Deskflow's official default is
+        # to listen on all available addresses. This avoids choosing a VPN/WSL
+        # adapter ourselves.
+        _write_settings(settings, computer_name=server_name, port=port, server_config=server_config)
         ok, message, proc = self._spawn([str(path), "server", "--settings", str(settings)], "server")
         if ok:
             with self._lock:
                 self.server_process = proc
                 self._server_connected = False
-            return True, f"Deskflow 主控已监听 {listen_ip or '全部网卡'}:{port}"
+            return True, f"主控已启动 · Deskflow 正在监听 TCP {port}"
         return False, message
 
-    def start_client(self, server_ip: str, server_port: int, client_name: str) -> tuple[bool, str]:
+    def start_client(self, server_ip: str, client_name: str, port: int = DEFAULT_PORT) -> tuple[bool, str]:
         self.stop_all()
         path = core_path()
         if not path.exists():
@@ -174,13 +186,13 @@ class DeskflowEngine:
         runtime = app_data_dir() / "runtime"
         runtime.mkdir(parents=True, exist_ok=True)
         settings = runtime / "deskflow-client-settings.ini"
-        _write_settings(settings, computer_name=client_name, port=server_port, remote_host=server_ip)
+        _write_settings(settings, computer_name=client_name, port=port, remote_host=server_ip)
         ok, message, proc = self._spawn([str(path), "client", "--settings", str(settings)], "client")
         if ok:
             with self._lock:
                 self.client_process = proc
                 self._client_connected = False
-            return True, f"Deskflow 第二台电脑正在主动连接 {server_ip}:{server_port}"
+            return True, f"第二台电脑正在主动连接 {server_ip}:{port}"
         return False, message
 
     def _spawn(self, command: list[str], role: str) -> tuple[bool, str, subprocess.Popen | None]:
@@ -215,18 +227,22 @@ class DeskflowEngine:
             with self._lock:
                 target = self._server_log if role == "server" else self._client_log
                 target.append(line)
-                del target[:-120]
+                del target[:-160]
             low = line.lower()
             if role == "server" and ("has connected" in low or "accepted client connection" in low):
                 with self._lock:
                     self._server_connected = True
-                self.status_cb("connected", "连接成功 · 鼠标可以跨屏，键盘会自动跟随")
-            elif role == "client" and ("connected to server" in low or "connected to secure socket" in low):
+                self.status_cb("connected", "连接成功 · 鼠标可以直接跨屏，键盘会自动跟随")
+            elif role == "client" and ("connected to server" in low or "ipc: connected to server" in low):
                 with self._lock:
                     self._client_connected = True
                 self.status_cb("remote_connected", "已连接主控电脑 · 正在接受键鼠控制")
-            elif "failed to connect" in low or "fatal" in low or "error:" in low or "critical" in low:
-                self.status_cb("engine_log", line)
+            elif "unrecognised client name" in low or "server refused client with our name" in low:
+                self.status_cb("pair_error", "配对码不正确：主控电脑没有授权这个客户端名称")
+            elif "timed out" in low or "failed to connect" in low or "no route" in low:
+                self.status_cb("network_error", line)
+            elif "fatal" in low or "error:" in low or "critical" in low:
+                self.status_cb("engine_error", line)
 
     def recent_log(self, role: str, count: int = 12) -> str:
         with self._lock:
@@ -240,6 +256,6 @@ class DeskflowEngine:
                 "client_alive": bool(self.client_process and self.client_process.poll() is None),
                 "server_connected": self._server_connected,
                 "client_connected": self._client_connected,
-                "server_log": self._server_log[-4:],
-                "client_log": self._client_log[-4:],
+                "server_log": self._server_log[-6:],
+                "client_log": self._client_log[-6:],
             }

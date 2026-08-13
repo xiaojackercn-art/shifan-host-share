@@ -32,12 +32,12 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"视饭AI主机共享-配对服务\""; Flags: runhidden; StatusMsg: "正在更新防火墙规则..."
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=\"视饭AI主机共享-配对服务\" dir=in action=allow protocol=TCP localport=35999 profile=private"; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"视饭AI主机共享-键鼠通道\""; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=\"视饭AI主机共享-键鼠通道\" dir=in action=allow protocol=TCP localport=24861 profile=private"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-配对服务"; Flags: runhidden; StatusMsg: "正在更新防火墙规则..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-配对服务 dir=in action=allow protocol=TCP localport=35999 profile=private"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-键鼠通道"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=视饭AI主机共享-键鼠通道 dir=in action=allow protocol=TCP localport=24861 profile=private"; Flags: runhidden
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"视饭AI主机共享-配对服务\""; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=\"视饭AI主机共享-键鼠通道\""; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-配对服务"; Flags: runhidden
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-键鼠通道"; Flags: runhidden

@@ -1,5 +1,6 @@
 #define MyAppName "视饭AI:主机共享"
-#define MyAppVersion "0.2.0"
+#define MyShortcutName "视饭AI主机共享"
+#define MyAppVersion "0.3.0"
 #define MyAppPublisher "视饭AI"
 #define MyAppExeName "ShifanAI-HostShare.exe"
 
@@ -9,10 +10,11 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\ShifanAI Host Share
-DefaultGroupName={#MyAppName}
+DefaultGroupName={#MyShortcutName}
 OutputDir=..\release
 OutputBaseFilename=ShifanAI-HostShare-Setup-x64
 SetupIconFile=..\assets\AI.ico
+UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
@@ -28,8 +30,8 @@ RestartApplications=no
 Source: "..\dist\ShifanAI-HostShare\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{autoprograms}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{autodesktop}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=视饭AI主机共享-配对服务"; Flags: runhidden; StatusMsg: "正在更新防火墙规则..."

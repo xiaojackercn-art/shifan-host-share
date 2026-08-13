@@ -31,7 +31,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          NOTES="v0.8.0：修复 v0.7.1 主控界面显示已开启、但 TCP 24800 实际可能没有对局域网可达的问题。Deskflow Server 改为仅监听 127.0.0.1:24810，由视饭AI主程序自己稳定监听 0.0.0.0:24800 并进行全双工 TCP 转发；主控只有在 Deskflow 后端与公开 24800 都通过真实 TCP 连接检测后才显示就绪；第二台电脑先真实探测主控 24800 再启动 Deskflow Client；发布流水线新增真实 Deskflow socket 监听测试和主程序 24800 防火墙规则校验。"
+          NOTES="v0.8.0：修复 v0.7.1 主控界面显示已开启、但 TCP 24800 实际可能没有对局域网可达的问题。Deskflow Server 改为仅监听 127.0.0.1:24810，由视饭AI主程序自己稳定监听 0.0.0.0:24800 并进行全双工 TCP 转发；主控只有在 Deskflow 后端、公开 24800 和本机实际局域网 IP 都通过真实 TCP 连接检测后才显示就绪；第二台电脑先真实探测主控 24800 再启动 Deskflow Client；Windows 发布前必须通过真实 Deskflow Server 监听、视饭AI TCP 转发、Deskflow Client/Server 持久连接、安装器和防火墙规则验证。"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$NOTES"
           else
@@ -87,6 +87,11 @@ jobs:
         run: |
           python scripts/smoke_deskflow_server.py "dist/ShifanAI-HostShare/engine/Deskflow/deskflow-core.exe"
           if ($LASTEXITCODE -ne 0) { throw "Deskflow real listener smoke test failed" }
+      - name: End-to-end Deskflow pair through ShifanAI bridge
+        shell: pwsh
+        run: |
+          python scripts/smoke_deskflow_pair.py "dist/ShifanAI-HostShare/engine/Deskflow/deskflow-core.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Deskflow client/server bridge handshake test failed" }
       - name: Smoke test portable UI
         shell: pwsh
         run: |
@@ -132,12 +137,14 @@ jobs:
 
           python scripts/smoke_deskflow_server.py "$core"
           if ($LASTEXITCODE -ne 0) { throw "Installed Deskflow real listener test failed" }
+          python scripts/smoke_deskflow_pair.py "$core"
+          if ($LASTEXITCODE -ne 0) { throw "Installed Deskflow client/server bridge handshake test failed" }
 
           $run=Start-Process $app -PassThru
           Start-Sleep 5
           if ($run.HasExited) { throw "Installed app exited early" }
           Stop-Process -Id $run.Id -Force
-          Write-Host "Windows installer, real Deskflow listener, installed app and main-program TCP 24800 firewall validation passed"
+          Write-Host "Windows installer, real listener, ShifanAI bridge, Deskflow pair, installed app and TCP 24800 firewall validation passed"
       - name: Upload release
         env:
           GH_TOKEN: ${{ github.token }}

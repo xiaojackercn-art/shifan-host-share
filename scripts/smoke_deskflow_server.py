@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from shifan_host_share.deskflow_engine import _write_settings, build_server_config  # noqa: E402
+from shifan_host_share.lan_bridge import probe_tcp  # noqa: E402
 
 
 def main() -> int:
@@ -33,18 +34,24 @@ def main() -> int:
             "down": "PAIR-DOWN",
         }
         server_config.write_text(build_server_config("HOST-SMOKE", peers), encoding="utf-8")
-        _write_settings(settings, computer_name="HOST-SMOKE", port=24855, server_config=server_config)
+        _write_settings(
+            settings,
+            computer_name="HOST-SMOKE",
+            port=24855,
+            server_config=server_config,
+            interface="127.0.0.1",
+        )
 
         settings_text = settings.read_text(encoding="utf-8")
-        external_line = next(
-            (line for line in settings_text.splitlines() if line.startswith("externalConfigFile=")),
-            "",
-        )
+        external_line = next((line for line in settings_text.splitlines() if line.startswith("externalConfigFile=")), "")
         if not external_line:
             print("externalConfigFile missing from generated settings", file=sys.stderr)
             return 3
         if "\\" in external_line:
             print(f"unsafe Windows path in settings: {external_line}", file=sys.stderr)
+            return 3
+        if "interface=127.0.0.1" not in settings_text:
+            print("loopback interface missing from backend settings", file=sys.stderr)
             return 3
 
         proc = subprocess.Popen(
@@ -56,16 +63,28 @@ def main() -> int:
             errors="replace",
         )
         try:
-            time.sleep(3.0)
-            output = ""
-            if proc.poll() is not None:
-                output = proc.stdout.read() if proc.stdout else ""
-                print(output, file=sys.stderr)
-                return 4
+            deadline = time.monotonic() + 10.0
+            last_probe = ""
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    output = proc.stdout.read() if proc.stdout else ""
+                    print(output, file=sys.stderr)
+                    return 4
+                result = probe_tcp("127.0.0.1", 24855, timeout=0.4)
+                if result.ok:
+                    print("Deskflow server opened a real TCP listener on 127.0.0.1:24855")
+                    print(external_line)
+                    return 0
+                last_probe = result.error
+                time.sleep(0.2)
 
-            print("Deskflow server stayed alive with generated settings")
-            print(external_line)
-            return 0
+            print(f"Deskflow process stayed alive but never listened on TCP 24855: {last_probe}", file=sys.stderr)
+            if proc.stdout:
+                try:
+                    print(proc.stdout.read(), file=sys.stderr)
+                except Exception:
+                    pass
+            return 5
         finally:
             if proc.poll() is None:
                 proc.terminate()

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+assets/AI.png
+assets/AI.ico
+assets/AI.icns
+*.spec
+.pytest_cache/
+.DS_Store

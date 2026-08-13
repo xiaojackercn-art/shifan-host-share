@@ -11,9 +11,12 @@ from pathlib import Path, PurePath
 from typing import Callable
 
 from .config import app_data_dir
+from .lan_bridge import TcpForwarder, probe_tcp
 
 DESKFLOW_VERSION = "1.26.0"
 DEFAULT_PORT = 24800
+BACKEND_HOST = "127.0.0.1"
+BACKEND_PORT = 24810
 
 
 def resource_root() -> Path:
@@ -51,13 +54,7 @@ def reverse_direction(direction: str) -> str:
 
 
 def _qsettings_path(path: PurePath) -> str:
-    """Return a path representation that Qt/QSettings preserves on every OS.
-
-    QSettings INI parsing treats backslashes as escape characters. A normal
-    Windows path such as C:\\Users\\... can therefore be read back as
-    C:Users... with the separators removed. Deskflow itself writes paths with
-    forward slashes on Windows, so always serialize file paths in POSIX form.
-    """
+    """Serialize paths in the form Qt/QSettings preserves on Windows."""
     return path.as_posix()
 
 
@@ -93,15 +90,19 @@ def _write_settings(
     port: int,
     remote_host: str = "",
     server_config: PurePath | None = None,
+    interface: str = "",
 ) -> None:
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.optionxform = str
-    cfg["core"] = {
+    core = {
         "computerName": computer_name,
         "port": str(int(port)),
-        "processMode": "1",
+        "processMode": "1",  # Deskflow::Settings::Desktop
         "useHooks": "true",
     }
+    if interface:
+        core["interface"] = interface
+    cfg["core"] = core
     cfg["security"] = {
         "tlsEnabled": "false",
         "checkPeerFingerprints": "false",
@@ -127,6 +128,7 @@ class DeskflowEngine:
         self.status_cb = status_cb or (lambda _kind, _text: None)
         self.server_process: subprocess.Popen | None = None
         self.client_process: subprocess.Popen | None = None
+        self.bridge = TcpForwarder("0.0.0.0", DEFAULT_PORT, BACKEND_HOST, BACKEND_PORT)
         self._lock = threading.RLock()
         self._server_connected = False
         self._client_connected = False
@@ -154,6 +156,7 @@ class DeskflowEngine:
                 pass
 
     def stop_server(self) -> None:
+        self.bridge.stop()
         with self._lock:
             proc = self.server_process
             self.server_process = None
@@ -167,27 +170,73 @@ class DeskflowEngine:
             self._client_connected = False
         self._terminate(proc)
 
+    def _wait_for_listener(self, proc: subprocess.Popen, host: str, port: int, timeout: float = 10.0) -> tuple[bool, str]:
+        deadline = time.monotonic() + timeout
+        last_error = ""
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return False, f"Deskflow 已退出（退出码 {proc.returncode}）"
+            probe = probe_tcp(host, port, timeout=0.35)
+            if probe.ok:
+                return True, "ok"
+            last_error = probe.error
+            time.sleep(0.18)
+        return False, f"Deskflow 进程仍在运行，但 {host}:{port} 在 {timeout:.0f} 秒内始终没有真正开始监听。最后一次检测：{last_error or '无响应'}"
+
     def start_server(self, server_name: str, peer_names: dict[str, str], port: int = DEFAULT_PORT) -> tuple[bool, str]:
         self.stop_all()
         path = core_path()
         if not path.exists():
             return False, f"Deskflow 核心缺失：{path}"
+
         runtime = app_data_dir() / "runtime"
         runtime.mkdir(parents=True, exist_ok=True)
         server_config = runtime / "deskflow-server.conf"
         settings = runtime / "deskflow-server-settings.ini"
         server_config.write_text(build_server_config(server_name, peer_names), "utf-8")
-        # Deliberately DO NOT set core/interface. Deskflow's official default is
-        # to listen on all available addresses. This avoids choosing a VPN/WSL
-        # adapter ourselves.
-        _write_settings(settings, computer_name=server_name, port=port, server_config=server_config)
+
+        # Keep Deskflow itself loopback-only.  The ShifanAI process owns the
+        # LAN-facing TCP 24800 listener and forwards raw Deskflow traffic to the
+        # backend.  This removes ambiguity around which adapter Deskflow binds
+        # to and lets us verify the real public listener before reporting ready.
+        _write_settings(
+            settings,
+            computer_name=server_name,
+            port=BACKEND_PORT,
+            server_config=server_config,
+            interface=BACKEND_HOST,
+        )
         ok, message, proc = self._spawn([str(path), "server", "--settings", str(settings)], "server")
-        if ok:
+        if not ok or proc is None:
+            return False, message
+
+        ready, detail = self._wait_for_listener(proc, BACKEND_HOST, BACKEND_PORT, timeout=10.0)
+        if not ready:
+            log = self.recent_log("server", 20)
+            self._terminate(proc)
             with self._lock:
-                self.server_process = proc
-                self._server_connected = False
-            return True, f"主控已启动 · Deskflow 正在监听 TCP {port}"
-        return False, message
+                self.server_process = None
+            return False, f"Deskflow 后端没有真正启动监听：{detail}{' | 日志：' + log if log else ''}"
+
+        bridge_ok, bridge_message = self.bridge.start()
+        if not bridge_ok:
+            self._terminate(proc)
+            with self._lock:
+                self.server_process = None
+            return False, f"主控网络入口启动失败：{bridge_message}"
+
+        public_probe = probe_tcp("127.0.0.1", port, timeout=1.2)
+        if not public_probe.ok:
+            self.bridge.stop()
+            self._terminate(proc)
+            with self._lock:
+                self.server_process = None
+            return False, f"TCP {port} 已创建但本机真实连接测试失败：{public_probe.error}"
+
+        with self._lock:
+            self.server_process = proc
+            self._server_connected = False
+        return True, f"主控端口已真实监听 0.0.0.0:{port}；Deskflow 后端 {BACKEND_HOST}:{BACKEND_PORT} 已就绪"
 
     def start_client(self, server_ip: str, client_name: str, port: int = DEFAULT_PORT) -> tuple[bool, str]:
         self.stop_all()
@@ -199,11 +248,11 @@ class DeskflowEngine:
         settings = runtime / "deskflow-client-settings.ini"
         _write_settings(settings, computer_name=client_name, port=port, remote_host=server_ip)
         ok, message, proc = self._spawn([str(path), "client", "--settings", str(settings)], "client")
-        if ok:
+        if ok and proc is not None:
             with self._lock:
                 self.client_process = proc
                 self._client_connected = False
-            return True, f"第二台电脑正在主动连接 {server_ip}:{port}"
+            return True, f"Deskflow 第二台电脑正在主动连接 {server_ip}:{port}"
         return False, message
 
     def _spawn(self, command: list[str], role: str) -> tuple[bool, str, subprocess.Popen | None]:
@@ -222,9 +271,9 @@ class DeskflowEngine:
         except Exception as exc:
             return False, f"无法启动 Deskflow：{exc}", None
         threading.Thread(target=self._read_output, args=(proc, role), name=f"deskflow-{role}-log", daemon=True).start()
-        time.sleep(1.0)
+        time.sleep(0.8)
         if proc.poll() is not None:
-            log = self.recent_log(role, 12)
+            log = self.recent_log(role, 16)
             return False, f"Deskflow 启动失败（退出码 {proc.returncode}）{': ' + log if log else ''}", None
         return True, "ok", proc
 
@@ -238,7 +287,7 @@ class DeskflowEngine:
             with self._lock:
                 target = self._server_log if role == "server" else self._client_log
                 target.append(line)
-                del target[:-160]
+                del target[:-200]
             low = line.lower()
             if role == "server" and ("has connected" in low or "accepted client connection" in low):
                 with self._lock:
@@ -249,7 +298,7 @@ class DeskflowEngine:
                     self._client_connected = True
                 self.status_cb("remote_connected", "已连接主控电脑 · 正在接受键鼠控制")
             elif "unrecognised client name" in low or "server refused client with our name" in low:
-                self.status_cb("pair_error", "配对码不正确：主控电脑没有授权这个客户端名称")
+                self.status_cb("pair_error", "配对码或屏幕方向与主控端授权不一致")
             elif "timed out" in low or "failed to connect" in low or "no route" in low:
                 self.status_cb("network_error", line)
             elif "fatal" in low or "error:" in low or "critical" in low:
@@ -262,7 +311,7 @@ class DeskflowEngine:
 
     def status(self) -> dict:
         with self._lock:
-            return {
+            result = {
                 "server_alive": bool(self.server_process and self.server_process.poll() is None),
                 "client_alive": bool(self.client_process and self.client_process.poll() is None),
                 "server_connected": self._server_connected,
@@ -270,3 +319,6 @@ class DeskflowEngine:
                 "server_log": self._server_log[-6:],
                 "client_log": self._client_log[-6:],
             }
+        result["bridge"] = self.bridge.status()
+        result["backend_port"] = BACKEND_PORT
+        return result

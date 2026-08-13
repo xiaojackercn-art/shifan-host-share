@@ -88,7 +88,7 @@ class AppApi:
             "engine": {"available": available, "path": engine_path, "version": DESKFLOW_VERSION},
             "os": platform.system(),
             "role": self.role,
-            "connection_mode": "direct-lan",
+            "connection_mode": "direct-ip",
         }
 
     def get_status(self) -> dict:
@@ -116,17 +116,29 @@ class AppApi:
         self._set_status(
             "connecting",
             "正在启动主控模式…",
-            "先启动 Deskflow 本机后端，再建立由视饭AI自身控制的 TCP 24800 局域网入口，并进行真实连接检测",
+            "先启动 Deskflow 本机后端，再建立由视饭AI自身控制的 TCP 24800 网络入口，并进行真实连接检测",
         )
         ok, message = self.engine.start_server(server_name, peer_names, DEFAULT_PORT)
         if not ok:
             self.role = "idle"
             self._set_status("error", "主控模式启动失败", message)
             return {"ok": False, "error": message}
+
+        # Verify the actual LAN address displayed to the user, not merely
+        # localhost.  This catches an unexpected adapter/bind problem before
+        # the UI claims that the host is ready.
+        lan_probe = probe_tcp(host_ip, DEFAULT_PORT, timeout=1.5)
+        if not lan_probe.ok:
+            self.engine.stop_all()
+            self.role = "idle"
+            detail = self._probe_error(host_ip, lan_probe)
+            self._set_status("error", "主控局域网入口验证失败", detail)
+            return {"ok": False, "error": detail}
+
         self._set_status(
             "host_waiting",
             "主控模式已开启 · 24800 已真实监听",
-            f"{host_ip}:{DEFAULT_PORT} 已就绪。第二台电脑输入本机 IP + 配对码即可连接。",
+            f"已从本机真实连接验证 {host_ip}:{DEFAULT_PORT}。第二台电脑输入本机 IP + 配对码即可连接。",
         )
         return {"ok": True, "host_ip": host_ip, "pair_code": self.cfg["pair_code"], "port": DEFAULT_PORT}
 

@@ -1,6 +1,6 @@
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from shifan_host_share.deskflow_engine import _write_settings, build_server_config, reverse_direction
+from shifan_host_share.deskflow_engine import _qsettings_path, _write_settings, build_server_config, reverse_direction
 from shifan_host_share.pairing import all_client_screen_names
 
 
@@ -19,6 +19,13 @@ def test_server_config_contains_all_authorized_screens():
         assert f"{reverse_direction(direction)} = HOST-1" in text
 
 
+def test_qsettings_windows_path_uses_forward_slashes():
+    path = PureWindowsPath(r"C:\Users\Administrator\AppData\Local\ShifanAIHostShare\runtime\deskflow-server.conf")
+    value = _qsettings_path(path)
+    assert value == "C:/Users/Administrator/AppData/Local/ShifanAIHostShare/runtime/deskflow-server.conf"
+    assert "\\" not in value
+
+
 def test_deskflow_server_settings_use_official_keys_without_pinning_interface(tmp_path: Path):
     settings = tmp_path / "server.ini"
     config = tmp_path / "deskflow.conf"
@@ -35,6 +42,7 @@ def test_deskflow_server_settings_use_official_keys_without_pinning_interface(tm
     assert "processMode=1" in text
     assert "interface=" not in text
     assert "externalConfig=true" in text
+    assert f"externalConfigFile={config.as_posix()}" in text
     assert "tlsEnabled=false" in text
 
 

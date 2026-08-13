@@ -11,7 +11,7 @@ from .deskflow_engine import DEFAULT_PORT, DESKFLOW_VERSION, DeskflowEngine, saf
 from .network_utils import list_lan_addresses, recommended_ip, validate_peer_ip
 from .pairing import all_client_screen_names, client_screen_name
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 
 
 class AppApi:

@@ -31,10 +31,11 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
+          NOTES="v0.3：Windows 桌面壳改为原生 Qt，彻底移除 pywebview/pythonnet；修复安装器快捷方式非法冒号；增加真实 EXE 启动与静默安装冒烟测试。"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "v0.2：重构键鼠核心、现代 UI、设备配对和正式安装包。"
+            gh release edit "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$NOTES"
           else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "v0.2：重构键鼠核心、现代 UI、设备配对和正式安装包。"
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$NOTES"
           fi
 
   build-windows:
@@ -63,20 +64,28 @@ jobs:
           New-Item -ItemType Directory -Force vendor-download | Out-Null
           7z x deskflow.7z -ovendor-download -y
           python scripts/normalize_deskflow_windows.py vendor-download vendor/Deskflow
-      - name: Build application directory
+      - name: Build native Qt application directory
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onedir --windowed `
             --name "ShifanAI-HostShare" `
             --icon "assets/AI.ico" `
             --paths "src" `
-            --add-data "src/shifan_host_share/web;web" `
-            --collect-all webview `
+            --add-data "assets;assets" `
             launcher.py
           New-Item -ItemType Directory -Force "dist/ShifanAI-HostShare/engine" | Out-Null
           Copy-Item "vendor/Deskflow" "dist/ShifanAI-HostShare/engine/Deskflow" -Recurse
           & "dist/ShifanAI-HostShare/engine/Deskflow/deskflow-core.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "Bundled Deskflow core is not executable" }
+      - name: Smoke test portable executable startup
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist/ShifanAI-HostShare/ShifanAI-HostShare.exe"
+          $proc = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 6
+          if ($proc.HasExited) { throw "Portable EXE exited during startup with code $($proc.ExitCode)" }
+          Stop-Process -Id $proc.Id -Force
+          Write-Host "Portable EXE startup smoke test passed"
       - name: Build real Windows installer
         shell: pwsh
         run: |
@@ -86,9 +95,24 @@ jobs:
           & $iscc "installer/windows.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
           Compress-Archive -Path "dist/ShifanAI-HostShare/*" -DestinationPath "release/ShifanAI-HostShare-Portable-Windows-x64.zip" -Force
+      - name: Smoke test installer end-to-end
+        shell: pwsh
+        run: |
+          $installer = Resolve-Path "release/ShifanAI-HostShare-Setup-x64.exe"
+          $target = Join-Path $env:RUNNER_TEMP "ShifanAIHostShareSmoke"
+          if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+          $p = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer smoke test failed with exit code $($p.ExitCode)" }
+          $installed = Join-Path $target "ShifanAI-HostShare.exe"
+          if (!(Test-Path $installed)) { throw "Installer completed but installed EXE was not found" }
+          $app = Start-Process -FilePath $installed -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited) { throw "Installed application exited during startup with code $($app.ExitCode)" }
+          Stop-Process -Id $app.Id -Force
+          Write-Host "Installer + installed application smoke test passed"
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-Windows-x64-v0.2
+          name: ShifanAI-HostShare-Windows-x64-v0.3
           path: release/*
       - name: Upload Windows files to Release
         env:
@@ -130,8 +154,7 @@ jobs:
             --icon "assets/AI.icns" \
             --osx-bundle-identifier "com.csshifan.shifanhostshare" \
             --paths "src" \
-            --add-data "src/shifan_host_share/web:web" \
-            --collect-all webview \
+            --add-data "assets:assets" \
             launcher.py
           mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
           ditto "vendor/Deskflow.app" "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
@@ -143,7 +166,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "release/ShifanAI-HostShare-macOS-AppleSilicon.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-macOS-AppleSilicon-v0.2
+          name: ShifanAI-HostShare-macOS-AppleSilicon-v0.3
           path: release/ShifanAI-HostShare-macOS-AppleSilicon.*
       - name: Upload to Release
         env:
@@ -184,8 +207,7 @@ jobs:
             --icon "assets/AI.icns" \
             --osx-bundle-identifier "com.csshifan.shifanhostshare" \
             --paths "src" \
-            --add-data "src/shifan_host_share/web:web" \
-            --collect-all webview \
+            --add-data "assets:assets" \
             launcher.py
           mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
           ditto "vendor/Deskflow.app" "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
@@ -197,7 +219,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "release/ShifanAI-HostShare-macOS-Intel.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-macOS-Intel-v0.2
+          name: ShifanAI-HostShare-macOS-Intel-v0.3
           path: release/ShifanAI-HostShare-macOS-Intel.*
       - name: Upload to Release
         env:

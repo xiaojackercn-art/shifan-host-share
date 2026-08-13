@@ -31,7 +31,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          NOTES="v0.7：删除自定义 35999 配对通道，改为单一 Deskflow TCP 24800；主控只启动 Deskflow Server，第二台电脑直接作为 Deskflow Client 主动连接；配对码确定性生成授权 screen name；Windows 防火墙直接放行 deskflow-core.exe；保留配对码自动格式化和安装目录选择。"
+          NOTES="v0.7.1：修复 Windows 下 Deskflow externalConfigFile 路径被 QSettings 吞掉反斜杠导致主控直接退出的问题；路径统一写成 Deskflow/Qt 可安全读取的正斜杠格式；发布前新增真实 deskflow-core server 启动测试，主控模式无法真正启动则禁止上传安装包。"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$NOTES"
           else
@@ -82,7 +82,12 @@ jobs:
           Copy-Item "vendor/Deskflow" "dist/ShifanAI-HostShare/engine/Deskflow" -Recurse
           & "dist/ShifanAI-HostShare/engine/Deskflow/deskflow-core.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "Bundled Deskflow core failed version check" }
-      - name: Smoke test portable
+      - name: Real Deskflow server startup test
+        shell: pwsh
+        run: |
+          python scripts/smoke_deskflow_server.py "dist/ShifanAI-HostShare/engine/Deskflow/deskflow-core.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Deskflow server runtime smoke test failed" }
+      - name: Smoke test portable UI
         shell: pwsh
         run: |
           $exe=Resolve-Path "dist/ShifanAI-HostShare/ShifanAI-HostShare.exe"
@@ -119,11 +124,14 @@ jobs:
           $applicationFilter = $programRule | Get-NetFirewallApplicationFilter
           if (("$($applicationFilter.Program)").ToLowerInvariant() -notlike "*deskflow-core.exe") { throw "deskflow-core.exe firewall rule missing" }
 
+          python scripts/smoke_deskflow_server.py "$core"
+          if ($LASTEXITCODE -ne 0) { throw "Installed Deskflow server runtime smoke test failed" }
+
           $run=Start-Process $app -PassThru
           Start-Sleep 5
           if ($run.HasExited) { throw "Installed app exited early" }
           Stop-Process -Id $run.Id -Force
-          Write-Host "Windows installer, installed app and Deskflow firewall validation passed"
+          Write-Host "Windows installer, real Deskflow server startup, installed app and firewall validation passed"
       - name: Upload release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -133,117 +141,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
-          name: ShifanAI-HostShare-Windows-x64-v0.7
+          name: ShifanAI-HostShare-Windows-x64-${{ needs.prepare-release.outputs.tag }}
           path: release/*
-
-  build-macos-arm:
-    needs: prepare-release
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-      - name: Install and test
-        shell: bash
-        run: |
-          set -e
-          python -m pip install -r requirements-build.txt pytest
-          PYTHONPATH=src python -m pytest -q
-          python scripts/prepare_icon.py
-      - name: Download Deskflow
-        shell: bash
-        run: |
-          set -e
-          curl -L --fail --retry 5 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-arm64.dmg"
-          mkdir -p "$RUNNER_TEMP/deskflow-mount" vendor
-          hdiutil attach deskflow.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/deskflow-mount"
-          ditto "$RUNNER_TEMP/deskflow-mount/Deskflow.app" vendor/Deskflow.app
-          hdiutil detach "$RUNNER_TEMP/deskflow-mount"
-      - name: Build and test DMG
-        shell: bash
-        run: |
-          set -e
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name "视饭AI主机共享" --icon assets/AI.icns --osx-bundle-identifier com.csshifan.shifanhostshare --paths src --add-data "assets:assets" launcher.py
-          mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
-          ditto vendor/Deskflow.app "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
-          codesign --force --deep --sign - "dist/视饭AI主机共享.app"
-          codesign --verify --deep --strict "dist/视饭AI主机共享.app"
-          mkdir -p release/dmgroot
-          ditto "dist/视饭AI主机共享.app" "release/dmgroot/视饭AI主机共享.app"
-          ln -s /Applications release/dmgroot/Applications
-          hdiutil create -volname "视饭AI主机共享" -srcfolder release/dmgroot -ov -format UDZO release/ShifanAI-HostShare-macOS-AppleSilicon.dmg
-          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" release/ShifanAI-HostShare-macOS-AppleSilicon.zip
-          QT_QPA_PLATFORM=offscreen "dist/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享" &
-          PID=$!
-          sleep 6
-          kill -0 $PID
-          kill $PID || true
-          wait $PID || true
-      - name: Upload release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare-release.outputs.tag }}
-        run: gh release upload "$TAG" release/ShifanAI-HostShare-macOS-AppleSilicon.* --clobber
-      - uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: ShifanAI-HostShare-macOS-AppleSilicon-v0.7
-          path: release/ShifanAI-HostShare-macOS-AppleSilicon.*
-
-  build-macos-intel:
-    needs: prepare-release
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-      - name: Install and test
-        shell: bash
-        run: |
-          set -e
-          python -m pip install -r requirements-build.txt pytest
-          PYTHONPATH=src python -m pytest -q
-          python scripts/prepare_icon.py
-      - name: Download Deskflow
-        shell: bash
-        run: |
-          set -e
-          curl -L --fail --retry 5 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-x86_64.dmg"
-          mkdir -p "$RUNNER_TEMP/deskflow-mount" vendor
-          hdiutil attach deskflow.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/deskflow-mount"
-          ditto "$RUNNER_TEMP/deskflow-mount/Deskflow.app" vendor/Deskflow.app
-          hdiutil detach "$RUNNER_TEMP/deskflow-mount"
-      - name: Build and test DMG
-        shell: bash
-        run: |
-          set -e
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name "视饭AI主机共享" --icon assets/AI.icns --osx-bundle-identifier com.csshifan.shifanhostshare --paths src --add-data "assets:assets" launcher.py
-          mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
-          ditto vendor/Deskflow.app "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
-          codesign --force --deep --sign - "dist/视饭AI主机共享.app"
-          codesign --verify --deep --strict "dist/视饭AI主机共享.app"
-          mkdir -p release/dmgroot
-          ditto "dist/视饭AI主机共享.app" "release/dmgroot/视饭AI主机共享.app"
-          ln -s /Applications release/dmgroot/Applications
-          hdiutil create -volname "视饭AI主机共享" -srcfolder release/dmgroot -ov -format UDZO release/ShifanAI-HostShare-macOS-Intel.dmg
-          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" release/ShifanAI-HostShare-macOS-Intel.zip
-          QT_QPA_PLATFORM=offscreen "dist/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享" &
-          PID=$!
-          sleep 6
-          kill -0 $PID
-          kill $PID || true
-          wait $PID || true
-      - name: Upload release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare-release.outputs.tag }}
-        run: gh release upload "$TAG" release/ShifanAI-HostShare-macOS-Intel.* --clobber
-      - uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with:
-          name: ShifanAI-HostShare-macOS-Intel-v0.7
-          path: release/ShifanAI-HostShare-macOS-Intel.*

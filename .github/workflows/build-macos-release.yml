@@ -20,6 +20,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve release tag
+        shell: bash
+        run: echo "RELEASE_TAG=v$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -78,16 +81,26 @@ jobs:
           hdiutil attach "release/ShifanAI-HostShare-macOS-AppleSilicon.dmg" -nobrowse -readonly -mountpoint "$TEST_MOUNT"
           test -x "$TEST_MOUNT/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享"
           hdiutil detach "$TEST_MOUNT"
-      - name: Upload Apple Silicon assets to v0.7.0
+      - name: Upload Apple Silicon assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release upload v0.7.0 release/ShifanAI-HostShare-macOS-AppleSilicon.dmg release/ShifanAI-HostShare-macOS-AppleSilicon.zip --clobber
+        run: |
+          set -e
+          for i in {1..30}; do
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" release/ShifanAI-HostShare-macOS-AppleSilicon.dmg release/ShifanAI-HostShare-macOS-AppleSilicon.zip --clobber
 
   macos-intel:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve release tag
+        shell: bash
+        run: echo "RELEASE_TAG=v$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -146,8 +159,15 @@ jobs:
           hdiutil attach "release/ShifanAI-HostShare-macOS-Intel.dmg" -nobrowse -readonly -mountpoint "$TEST_MOUNT"
           test -x "$TEST_MOUNT/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享"
           hdiutil detach "$TEST_MOUNT"
-      - name: Upload Intel assets to v0.7.0
+      - name: Upload Intel assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release upload v0.7.0 release/ShifanAI-HostShare-macOS-Intel.dmg release/ShifanAI-HostShare-macOS-Intel.zip --clobber
+        run: |
+          set -e
+          for i in {1..30}; do
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" release/ShifanAI-HostShare-macOS-Intel.dmg release/ShifanAI-HostShare-macOS-Intel.zip --clobber

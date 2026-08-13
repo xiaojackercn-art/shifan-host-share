@@ -10,7 +10,7 @@ from .deskflow_engine import DESKFLOW_VERSION, DeskflowEngine, safe_screen_name
 from .network_utils import list_lan_addresses, recommended_ip, route_ip_to, validate_peer_ip
 from .pairing import PairingClient, PairingService
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 
 class AppApi:

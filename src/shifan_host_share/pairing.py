@@ -88,6 +88,7 @@ class PairingService:
                     response = {"ok": False, "error": f"请求格式错误：{exc}"}
                 self.wfile.write((json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
         self._server = _ThreadingTCPServer((self.host, self.port), Handler)
+        self.port = int(self._server.server_address[1])
         self._thread = threading.Thread(target=self._server.serve_forever, name="pairing-service", daemon=True)
         self._thread.start()
         self.on_status(f"设备配对服务已启动 · {self.port}")
@@ -123,13 +124,22 @@ class PairingService:
 
 class PairingClient:
     @staticmethod
-    def _request(host: str, port: int, payload: dict, timeout: float = 4.0) -> dict:
+    def _request(host: str, port: int, payload: dict, timeout: float = 4.0, source_ip: str | None = None) -> dict:
         data = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
             sock.settimeout(timeout)
+            if source_ip:
+                # Explicitly pin the TCP connection to the chosen physical LAN
+                # address. This prevents VPN/Hyper-V route selection from silently
+                # changing the source interface on multi-adapter Windows machines.
+                sock.bind((source_ip, 0))
+            sock.connect((host, int(port)))
             sock.sendall(data)
             file = sock.makefile("rb")
             raw = file.readline(MAX_LINE)
+        finally:
+            sock.close()
         if not raw:
             raise ConnectionError("第二台电脑没有返回数据")
         result = json.loads(raw.decode("utf-8"))
@@ -138,24 +148,24 @@ class PairingClient:
         return result
 
     @classmethod
-    def probe(cls, host: str, port: int) -> ProbeInfo:
+    def probe(cls, host: str, port: int, source_ip: str | None = None) -> ProbeInfo:
         payload = {"protocol": PROTOCOL_VERSION, "action": "probe", "nonce": secrets.token_hex(12)}
-        result = cls._request(host, port, payload)
+        result = cls._request(host, port, payload, source_ip=source_ip)
         if not result.get("ok"):
             raise ConnectionError(str(result.get("error", "无法识别第二台电脑")))
         return ProbeInfo(str(result.get("device_name", host)), str(result.get("device_id", "")), str(result.get("version", "")))
 
     @classmethod
-    def start_remote_client(cls, host: str, port: int, pair_code: str, server_ip: str, server_port: int, client_name: str) -> dict:
+    def start_remote_client(cls, host: str, port: int, pair_code: str, server_ip: str, server_port: int, client_name: str, source_ip: str | None = None) -> dict:
         payload = {"protocol": PROTOCOL_VERSION, "action": "start_client", "timestamp": int(time.time()), "nonce": secrets.token_hex(16), "server_ip": server_ip, "server_port": int(server_port), "client_name": client_name}
         payload["proof"] = sign_payload(payload, pair_code)
-        return cls._request(host, port, payload, timeout=7.0)
+        return cls._request(host, port, payload, timeout=7.0, source_ip=source_ip)
 
     @classmethod
-    def stop_remote_client(cls, host: str, port: int, pair_code: str) -> None:
+    def stop_remote_client(cls, host: str, port: int, pair_code: str, source_ip: str | None = None) -> None:
         payload = {"protocol": PROTOCOL_VERSION, "action": "stop_client", "timestamp": int(time.time()), "nonce": secrets.token_hex(16)}
         payload["proof"] = sign_payload(payload, pair_code)
         try:
-            cls._request(host, port, payload, timeout=3.0)
+            cls._request(host, port, payload, timeout=3.0, source_ip=source_ip)
         except Exception:
             pass

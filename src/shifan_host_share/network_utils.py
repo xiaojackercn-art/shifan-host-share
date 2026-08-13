@@ -9,7 +9,8 @@ try:
 except Exception:  # pragma: no cover
     psutil = None
 
-VIRTUAL_HINTS = ("vpn", "wireguard", "tailscale", "zerotier", "tap", "tun", "vethernet", "hyper-v", "vmware", "virtualbox")
+VPN_HINTS = ("vpn", "proton", "wireguard", "tailscale", "zerotier", "tap", "tun")
+VIRTUAL_HINTS = VPN_HINTS + ("vethernet", "hyper-v", "vmware", "virtualbox", "wsl")
 
 
 @dataclass(frozen=True)
@@ -37,23 +38,36 @@ def _score(interface: str, ip: str) -> int:
     return score
 
 
+def _iter_private_ipv4():
+    if psutil is None:
+        return
+    stats = psutil.net_if_stats()
+    for iface, addrs in psutil.net_if_addrs().items():
+        stat = stats.get(iface)
+        if stat is not None and not stat.isup:
+            continue
+        for addr in addrs:
+            if addr.family != socket.AF_INET:
+                continue
+            ip = addr.address
+            try:
+                parsed = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if parsed.is_loopback or parsed.is_link_local or not parsed.is_private:
+                continue
+            yield iface, ip, addr.netmask
+
+
 def list_lan_addresses() -> list[LanAddress]:
     seen: set[str] = set()
     items: list[tuple[int, str, str]] = []
     if psutil is not None:
-        for iface, addrs in psutil.net_if_addrs().items():
-            for addr in addrs:
-                if addr.family != socket.AF_INET:
-                    continue
-                ip = addr.address
-                try:
-                    parsed = ipaddress.ip_address(ip)
-                except ValueError:
-                    continue
-                if parsed.is_loopback or parsed.is_link_local or not parsed.is_private or ip in seen:
-                    continue
-                seen.add(ip)
-                items.append((_score(iface, ip), iface, ip))
+        for iface, ip, _ in _iter_private_ipv4() or []:
+            if ip in seen:
+                continue
+            seen.add(ip)
+            items.append((_score(iface, ip), iface, ip))
     if not items:
         try:
             for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM):
@@ -70,6 +84,20 @@ def list_lan_addresses() -> list[LanAddress]:
     return [LanAddress(iface, ip, i == 0) for i, (_, iface, ip) in enumerate(items)]
 
 
+def vpn_adapters() -> list[LanAddress]:
+    found: list[LanAddress] = []
+    for iface, ip, _ in _iter_private_ipv4() or []:
+        low = iface.lower()
+        if any(hint in low for hint in VPN_HINTS):
+            found.append(LanAddress(iface, ip, False))
+    return found
+
+
+def is_virtual_interface(interface: str) -> bool:
+    low = interface.lower()
+    return any(hint in low for hint in VIRTUAL_HINTS)
+
+
 def recommended_ip() -> str:
     addresses = list_lan_addresses()
     return addresses[0].ip if addresses else "127.0.0.1"
@@ -82,6 +110,45 @@ def route_ip_to(peer_ip: str, peer_port: int = 35999) -> str:
         return str(sock.getsockname()[0])
     finally:
         sock.close()
+
+
+def source_candidates_for(peer_ip: str, peer_port: int = 35999) -> list[str | None]:
+    candidates: list[str | None] = []
+    try:
+        routed = route_ip_to(peer_ip, peer_port)
+        if routed and routed != "0.0.0.0":
+            candidates.append(routed)
+    except OSError:
+        pass
+    addresses = list_lan_addresses()
+    physical = [a.ip for a in addresses if not is_virtual_interface(a.interface)]
+    virtual = [a.ip for a in addresses if is_virtual_interface(a.interface)]
+    for ip in physical + virtual:
+        if ip not in candidates:
+            candidates.append(ip)
+    # Final fallback lets Windows choose the source address itself. This helps on
+    # machines whose route table changes after a VPN reconnect.
+    candidates.append(None)
+    return candidates
+
+
+def same_local_subnet(peer_ip: str) -> bool:
+    if psutil is None:
+        return True
+    try:
+        peer = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        return False
+    for _, ip, netmask in _iter_private_ipv4() or []:
+        if not netmask:
+            continue
+        try:
+            network = ipaddress.ip_network(f"{ip}/{netmask}", strict=False)
+        except ValueError:
+            continue
+        if peer in network:
+            return True
+    return False
 
 
 def validate_peer_ip(value: str) -> str:

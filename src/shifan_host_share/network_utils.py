@@ -112,41 +112,61 @@ def route_ip_to(peer_ip: str, peer_port: int = 35999) -> str:
         sock.close()
 
 
+def _same_subnet(local_ip: str, netmask: str | None, peer_ip: str) -> bool:
+    if not netmask:
+        return False
+    try:
+        network = ipaddress.ip_network(f"{local_ip}/{netmask}", strict=False)
+        return ipaddress.ip_address(peer_ip) in network
+    except ValueError:
+        return False
+
+
 def source_candidates_for(peer_ip: str, peer_port: int = 35999) -> list[str | None]:
+    """Return source addresses in the safest order for a LAN peer.
+
+    Physical adapters on the peer's actual subnet come first. VPN/Hyper-V/WSL
+    addresses are deliberately last so ProtonVPN or a virtual switch cannot
+    win simply because Windows put it earlier in the route table.
+    """
+    same_physical: list[str] = []
+    other_physical: list[str] = []
+    virtual: list[str] = []
+    for iface, ip, netmask in _iter_private_ipv4() or []:
+        if is_virtual_interface(iface):
+            virtual.append(ip)
+        elif _same_subnet(ip, netmask, peer_ip):
+            same_physical.append(ip)
+        else:
+            other_physical.append(ip)
+
     candidates: list[str | None] = []
+    for ip in same_physical + other_physical:
+        if ip not in candidates:
+            candidates.append(ip)
+
     try:
         routed = route_ip_to(peer_ip, peer_port)
-        if routed and routed != "0.0.0.0":
+        if routed and routed != "0.0.0.0" and routed not in virtual and routed not in candidates:
             candidates.append(routed)
     except OSError:
         pass
-    addresses = list_lan_addresses()
-    physical = [a.ip for a in addresses if not is_virtual_interface(a.interface)]
-    virtual = [a.ip for a in addresses if is_virtual_interface(a.interface)]
-    for ip in physical + virtual:
+
+    # Let Windows choose without an explicit bind before ever forcing a VPN or
+    # virtual adapter. Some endpoint filters reject explicit source binding.
+    candidates.append(None)
+
+    for ip in virtual:
         if ip not in candidates:
             candidates.append(ip)
-    # Final fallback lets Windows choose the source address itself. This helps on
-    # machines whose route table changes after a VPN reconnect.
-    candidates.append(None)
     return candidates
 
 
 def same_local_subnet(peer_ip: str) -> bool:
     if psutil is None:
         return True
-    try:
-        peer = ipaddress.ip_address(peer_ip)
-    except ValueError:
-        return False
     for _, ip, netmask in _iter_private_ipv4() or []:
-        if not netmask:
-            continue
-        try:
-            network = ipaddress.ip_network(f"{ip}/{netmask}", strict=False)
-        except ValueError:
-            continue
-        if peer in network:
+        if _same_subnet(ip, netmask, peer_ip):
             return True
     return False
 

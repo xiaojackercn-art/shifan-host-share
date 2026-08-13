@@ -28,10 +28,23 @@ def normalize_pair_code(value: str) -> str:
     return "".join(ch for ch in str(value).upper() if ch.isalnum())
 
 
+def format_pair_code(value: str) -> str:
+    raw = normalize_pair_code(value)[:12]
+    return "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+
+
+def format_pair_code_input(value: str) -> str:
+    raw = normalize_pair_code(value)[:12]
+    formatted = "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+    if len(raw) in {4, 8} and len(raw) < 12:
+        formatted += "-"
+    return formatted
+
+
 def new_pair_code() -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     raw = "".join(secrets.choice(alphabet) for _ in range(12))
-    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+    return format_pair_code(raw)
 
 
 def new_device_id() -> str:

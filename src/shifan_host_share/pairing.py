@@ -73,6 +73,7 @@ class PairingService:
 
     def start(self) -> None:
         service = self
+
         class Handler(socketserver.StreamRequestHandler):
             def handle(self) -> None:
                 self.connection.settimeout(8)
@@ -87,9 +88,10 @@ class PairingService:
                 except Exception as exc:
                     response = {"ok": False, "error": f"请求格式错误：{exc}"}
                 self.wfile.write((json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
+
         self._server = _ThreadingTCPServer((self.host, self.port), Handler)
         self.port = int(self._server.server_address[1])
-        self._thread = threading.Thread(target=self._server.serve_forever, name="pairing-service", daemon=True)
+        self._thread = threading.Thread(target=self._server.serve_forever, name=f"pairing-service-{self.port}", daemon=True)
         self._thread.start()
         self.on_status(f"设备配对服务已启动 · {self.port}")
 
@@ -127,12 +129,10 @@ class PairingClient:
     def _request(host: str, port: int, payload: dict, timeout: float = 4.0, source_ip: str | None = None) -> dict:
         data = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw = b""
         try:
             sock.settimeout(timeout)
             if source_ip:
-                # Explicitly pin the TCP connection to the chosen physical LAN
-                # address. This prevents VPN/Hyper-V route selection from silently
-                # changing the source interface on multi-adapter Windows machines.
                 sock.bind((source_ip, 0))
             sock.connect((host, int(port)))
             sock.sendall(data)
@@ -148,9 +148,9 @@ class PairingClient:
         return result
 
     @classmethod
-    def probe(cls, host: str, port: int, source_ip: str | None = None) -> ProbeInfo:
+    def probe(cls, host: str, port: int, source_ip: str | None = None, timeout: float = 1.4) -> ProbeInfo:
         payload = {"protocol": PROTOCOL_VERSION, "action": "probe", "nonce": secrets.token_hex(12)}
-        result = cls._request(host, port, payload, source_ip=source_ip)
+        result = cls._request(host, port, payload, timeout=timeout, source_ip=source_ip)
         if not result.get("ok"):
             raise ConnectionError(str(result.get("error", "无法识别第二台电脑")))
         return ProbeInfo(str(result.get("device_name", host)), str(result.get("device_id", "")), str(result.get("version", "")))

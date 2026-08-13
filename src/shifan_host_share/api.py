@@ -19,7 +19,8 @@ from .network_utils import (
 )
 from .pairing import PairingClient, PairingService
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
+CONTROL_PORT_FALLBACKS = (35999, 24862, 47891)
 
 
 class AppApi:
@@ -28,20 +29,33 @@ class AppApi:
         self._status_lock = threading.RLock()
         self._status = {"kind": "ready", "text": "准备就绪 · 等待连接", "detail": ""}
         self.engine = DeskflowEngine(self._engine_status)
-        self.service = PairingService(
-            "0.0.0.0",
-            int(self.cfg["control_port"]),
-            lambda: self.cfg["pair_code"],
-            self._device_info,
-            self._remote_start_client,
-            self.engine.stop_client,
-            lambda text: self._set_status("ready", "本机已就绪", text),
-        )
-        self.service.start()
+        requested = [int(self.cfg.get("control_port", 35999)), *CONTROL_PORT_FALLBACKS]
+        self.control_ports = list(dict.fromkeys(requested))
+        self.services: list[PairingService] = []
+        bind_errors: list[str] = []
+        for port in self.control_ports:
+            service = PairingService(
+                "0.0.0.0",
+                port,
+                lambda: self.cfg["pair_code"],
+                self._device_info,
+                self._remote_start_client,
+                self.engine.stop_client,
+                lambda text: self._set_status("ready", "本机已就绪", text),
+            )
+            try:
+                service.start()
+                self.services.append(service)
+            except OSError as exc:
+                bind_errors.append(f"{port}: {exc}")
+        self.control_ports = [s.port for s in self.services]
+        if not self.services:
+            raise RuntimeError("所有配对端口都无法启动：" + "; ".join(bind_errors))
 
     def close(self) -> None:
         self.engine.stop_all()
-        self.service.stop()
+        for service in self.services:
+            service.stop()
 
     def _device_info(self) -> dict:
         return {"device_name": socket.gethostname(), "device_id": self.cfg["device_id"], "version": APP_VERSION, "os": platform.system()}
@@ -77,7 +91,8 @@ class AppApi:
                 "pair_code": self.cfg["pair_code"],
                 "recommended_ip": addresses[0].ip if addresses else recommended_ip(),
                 "addresses": [{"interface": a.interface, "ip": a.ip, "recommended": a.recommended} for a in addresses],
-                "control_port": self.cfg["control_port"],
+                "control_port": self.control_ports[0],
+                "control_ports": self.control_ports,
             },
             "vpn_adapters": [{"interface": a.interface, "ip": a.ip} for a in vpns],
             "peer": self.cfg.get("peer", {}),
@@ -96,42 +111,62 @@ class AppApi:
         self._set_status("ready", "配对码已更新", "旧配对码立即失效")
         return {"ok": True, "pair_code": code}
 
+    def _proton_detected(self) -> bool:
+        return any("proton" in a.interface.lower() for a in vpn_adapters())
+
     def _vpn_hint(self) -> str:
         adapters = vpn_adapters()
         if not adapters:
             return ""
         names = "、".join(dict.fromkeys(a.interface for a in adapters))
-        if any("proton" in a.interface.lower() for a in adapters):
-            return f"检测到 {names}。Proton VPN 请开启 Settings → Connection → Advanced settings → Allow LAN connections，然后重新连接 VPN。"
-        return f"检测到 VPN/隧道网卡：{names}。如果 VPN 禁止局域网访问，请在 VPN 中开启 LAN/Local network access。"
+        if self._proton_detected():
+            return (
+                f"检测到 {names}。如果 Proton VPN 正在连接，请在 Settings → Connection → Advanced settings 中开启 "
+                "Allow LAN connections，并 Apply/Reconnect；如果你的 Proton 方案没有该开关，请在使用主机共享期间断开 Proton VPN。"
+            )
+        return f"检测到 VPN/隧道网卡：{names}。如果 VPN 禁止局域网访问，请开启 LAN/Local network access。"
 
     def _network_error(self, host: str, exc: BaseException) -> str:
         winerror = getattr(exc, "winerror", None)
         vpn_hint = self._vpn_hint()
         subnet_hint = "" if same_local_subnet(host) else " 当前输入的 IP 与本机已识别网卡不在同一子网，请确认两台电脑连接同一个路由器。"
+        ports = "/".join(str(p) for p in CONTROL_PORT_FALLBACKS)
         if winerror == 10013 or getattr(exc, "errno", None) in {13, 10013}:
-            base = "Windows 拒绝了局域网套接字访问（10013）。v0.4 安装器已经改为对所有 Windows 网络配置文件放行本软件局域网端口。"
+            base = (
+                "Windows 返回 10013：本机的网络过滤层拒绝了局域网套接字。v0.5 已优先绑定 192.168.x.x/物理网卡、"
+                f"自动尝试 {ports} 三个配对端口，并由安装器添加程序级和端口级防火墙规则。"
+            )
             return f"{base} {vpn_hint}{subnet_hint}".strip()
         if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in str(exc).lower():
-            base = f"第二台电脑 {host} 没有响应配对端口。请确保两台电脑都安装 v0.4.0 并保持软件打开。"
+            base = (
+                f"第二台电脑 {host} 在兼容配对端口 {ports} 上都没有响应。"
+                "如果另一台电脑运行 Proton VPN，也必须允许 LAN；否则它会表现为这一侧一直超时。"
+            )
             return f"{base} {vpn_hint}{subnet_hint}".strip()
         return f"无法连接第二台电脑：{exc}. {vpn_hint}{subnet_hint}".strip()
 
-    def _probe_peer(self, host: str, port: int):
-        last_exc: BaseException | None = None
-        routed_ip = None
-        try:
-            routed_ip = route_ip_to(host, port)
-        except OSError:
-            pass
-        for source_ip in source_candidates_for(host, port):
-            try:
-                probe = PairingClient.probe(host, port, source_ip=source_ip)
-                return probe, (source_ip or routed_ip or recommended_ip())
-            except (OSError, ConnectionError, TimeoutError) as exc:
-                last_exc = exc
-        if last_exc:
-            raise last_exc
+    def _probe_peer(self, host: str):
+        errors: list[BaseException] = []
+        preferred_error: BaseException | None = None
+        for port in CONTROL_PORT_FALLBACKS:
+            for source_ip in source_candidates_for(host, port):
+                try:
+                    probe = PairingClient.probe(host, port, source_ip=source_ip, timeout=1.4)
+                    local_ip = source_ip
+                    if not local_ip:
+                        try:
+                            local_ip = route_ip_to(host, port)
+                        except OSError:
+                            local_ip = recommended_ip()
+                    return probe, local_ip, port
+                except (OSError, ConnectionError, TimeoutError) as exc:
+                    errors.append(exc)
+                    if getattr(exc, "winerror", None) == 10013 or getattr(exc, "errno", None) in {13, 10013}:
+                        preferred_error = exc
+        if preferred_error is not None:
+            raise preferred_error
+        if errors:
+            raise errors[-1]
         raise ConnectionError("没有可用的局域网连接路径")
 
     def connect(self, payload: dict) -> dict:
@@ -147,16 +182,16 @@ class AppApi:
             if host in {a.ip for a in list_lan_addresses()}:
                 raise ValueError("这里要填写第二台电脑的 IP，不能填写本机 IP")
 
-            control_port = int(self.cfg["control_port"])
-            self._set_status("connecting", "正在识别第二台电脑…", f"{host}:{control_port} · 自动选择正确局域网网卡")
-            probe, local_route_ip = self._probe_peer(host, control_port)
+            ports_text = "/".join(str(p) for p in CONTROL_PORT_FALLBACKS)
+            self._set_status("connecting", "正在识别第二台电脑…", f"{host} · 自动检测 {ports_text} 并优先物理局域网网卡")
+            probe, local_route_ip, control_port = self._probe_peer(host)
             if probe.version and probe.version != APP_VERSION:
                 raise ConnectionError(f"两台电脑版本不同：本机 {APP_VERSION} / 第二台 {probe.version}，请安装同一版本")
 
             server_name = safe_screen_name("HOST", self.cfg["device_id"])
             client_name = safe_screen_name("PEER", probe.device_id)
             kvm_port = int(self.cfg["kvm_port"])
-            self._set_status("connecting", "正在启动本机键鼠共享核心…", f"物理局域网路径 {local_route_ip} → {probe.device_name}")
+            self._set_status("connecting", "正在启动本机键鼠共享核心…", f"局域网路径 {local_route_ip} → {probe.device_name} · 配对端口 {control_port}")
             ok, message = self.engine.start_server(server_name, client_name, direction, kvm_port)
             if not ok:
                 raise RuntimeError(message)
@@ -175,10 +210,17 @@ class AppApi:
                 self.engine.stop_server()
                 raise PermissionError(str(response.get("error") or response.get("message") or "第二台电脑拒绝连接"))
 
-            self.cfg["peer"] = {"host": host, "pair_code": pair_code, "direction": direction, "device_name": probe.device_name, "device_id": probe.device_id}
+            self.cfg["peer"] = {
+                "host": host,
+                "pair_code": pair_code,
+                "direction": direction,
+                "device_name": probe.device_name,
+                "device_id": probe.device_id,
+                "control_port": control_port,
+            }
             save_config(self.cfg)
             self._set_status("connecting", f"已通过配对 · 正在建立 {probe.device_name} 键鼠通道", "通常 1-3 秒完成")
-            return {"ok": True, "peer_name": probe.device_name, "local_route_ip": local_route_ip}
+            return {"ok": True, "peer_name": probe.device_name, "local_route_ip": local_route_ip, "control_port": control_port}
         except PermissionError as exc:
             self._set_status("error", "配对失败", str(exc))
             return {"ok": False, "error": str(exc), "code": "PAIR_CODE"}
@@ -186,7 +228,8 @@ class AppApi:
             self.engine.stop_server()
             text = self._network_error(host, exc)
             self._set_status("error", "网络连接失败", text)
-            return {"ok": False, "error": text, "code": "NETWORK"}
+            code = "VPN_BLOCK" if self._proton_detected() or getattr(exc, "winerror", None) == 10013 else "NETWORK"
+            return {"ok": False, "error": text, "code": code}
         except Exception as exc:
             self.engine.stop_server()
             self._set_status("error", "启动失败", str(exc))
@@ -196,11 +239,12 @@ class AppApi:
         peer = self.cfg.get("peer") or {}
         if peer.get("host") and peer.get("pair_code"):
             source = None
+            control_port = int(peer.get("control_port") or self.control_ports[0])
             try:
-                source = route_ip_to(str(peer["host"]), int(self.cfg["control_port"]))
+                source = route_ip_to(str(peer["host"]), control_port)
             except OSError:
                 pass
-            PairingClient.stop_remote_client(str(peer["host"]), int(self.cfg["control_port"]), str(peer["pair_code"]), source_ip=source)
+            PairingClient.stop_remote_client(str(peer["host"]), control_port, str(peer["pair_code"]), source_ip=source)
         self.engine.stop_server()
         self._set_status("ready", "共享已停止", "本机配对服务仍在运行")
         return {"ok": True}

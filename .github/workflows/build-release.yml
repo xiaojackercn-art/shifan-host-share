@@ -31,7 +31,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          NOTES="v0.4：修复真实双机局域网连接链路；Windows 全网络配置文件 LocalSubnet 防火墙规则；显式绑定物理 LAN 网卡并自动多路径重试；ProtonVPN/虚拟网卡诊断；圆角透明图标；Mac APP/DMG 启动与挂载验证。"
+          NOTES="v0.5：三配对端口自动回退；优先物理同子网网卡并降低 ProtonVPN/WSL/Hyper-V 优先级；Windows 程序级+端口级 RFC1918 防火墙规则；配对码每 4 位自动加横线；安装时始终显示安装目录；保留 Windows 与两种 Mac 实际启动/DMG 验证。"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$NOTES"
           else
@@ -53,6 +53,11 @@ jobs:
         env:
           PYTHONPATH: src
         run: python -m pytest -q
+      - name: Verify installer always exposes directory selection
+        shell: pwsh
+        run: |
+          $text = Get-Content "installer/windows.iss" -Raw
+          if ($text -notmatch "DisableDirPage=no") { throw "Installer directory page is not forced on" }
       - name: Download and round exact user icon
         run: python scripts/prepare_icon.py
       - name: Download Deskflow 1.26.0 Windows x64 engine
@@ -106,7 +111,8 @@ jobs:
           $installed = Join-Path $target "ShifanAI-HostShare.exe"
           if (!(Test-Path $installed)) { throw "Installer completed but installed EXE was not found" }
           $rules = netsh advfirewall firewall show rule name="视饭AI主机共享-配对服务-入站"
-          if (($rules -join "`n") -notmatch "35999") { throw "Control-port firewall rule was not installed" }
+          $ruleText = $rules -join "`n"
+          if ($ruleText -notmatch "35999" -or $ruleText -notmatch "24862" -or $ruleText -notmatch "47891") { throw "Pairing fallback firewall ports were not installed" }
           $app = Start-Process -FilePath $installed -PassThru
           Start-Sleep -Seconds 5
           if ($app.HasExited) { throw "Installed application exited during startup with code $($app.ExitCode)" }
@@ -121,7 +127,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
-          name: ShifanAI-HostShare-Windows-x64-v0.4
+          name: ShifanAI-HostShare-Windows-x64-v0.5
           path: release/*
 
   build-macos-arm:
@@ -192,7 +198,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
-          name: ShifanAI-HostShare-macOS-AppleSilicon-v0.4
+          name: ShifanAI-HostShare-macOS-AppleSilicon-v0.5
           path: release/ShifanAI-HostShare-macOS-AppleSilicon.*
 
   build-macos-intel:
@@ -263,5 +269,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
-          name: ShifanAI-HostShare-macOS-Intel-v0.4
+          name: ShifanAI-HostShare-macOS-Intel-v0.5
           path: release/ShifanAI-HostShare-macOS-Intel.*

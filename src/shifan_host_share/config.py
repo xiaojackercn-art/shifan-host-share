@@ -7,8 +7,7 @@ import secrets
 from pathlib import Path
 
 APP_DIR = "ShifanAIHostShare"
-DEFAULT_CONTROL_PORT = 35999
-DEFAULT_KVM_PORT = 24861
+DEFAULT_KVM_PORT = 24800
 
 
 def app_data_dir() -> Path:
@@ -53,10 +52,9 @@ def new_device_id() -> str:
 
 def default_config() -> dict:
     return {
-        "version": 2,
+        "version": 3,
         "device_id": new_device_id(),
         "pair_code": new_pair_code(),
-        "control_port": DEFAULT_CONTROL_PORT,
         "kvm_port": DEFAULT_KVM_PORT,
         "peer": {
             "host": "",
@@ -75,11 +73,14 @@ def load_config() -> dict:
         try:
             data = json.loads(path.read_text("utf-8"))
             if isinstance(data, dict):
-                cfg.update({k: v for k, v in data.items() if k != "peer"})
+                cfg.update({k: v for k, v in data.items() if k not in {"peer", "control_port"}})
                 if isinstance(data.get("peer"), dict):
                     cfg["peer"].update(data["peer"])
         except Exception:
             pass
+    cfg["version"] = 3
+    cfg["kvm_port"] = DEFAULT_KVM_PORT
+    cfg.pop("control_port", None)
     if not normalize_pair_code(cfg.get("pair_code", "")):
         cfg["pair_code"] = new_pair_code()
     if not cfg.get("device_id"):

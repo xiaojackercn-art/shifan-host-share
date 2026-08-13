@@ -1,83 +1,88 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
+import platform
 import secrets
 from pathlib import Path
-from typing import Any
 
-APP_DIR_NAME = ".shifan_host_share"
-DEFAULT_PORT = 24861
-
-
-def _new_key() -> str:
-    raw = base64.b32encode(secrets.token_bytes(10)).decode("ascii").rstrip("=")
-    return "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+APP_DIR = "ShifanAIHostShare"
+DEFAULT_CONTROL_PORT = 35999
+DEFAULT_KVM_PORT = 24861
 
 
-def config_dir() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home()))
-        path = base / "ShifanAIHostShare"
+def app_data_dir() -> Path:
+    system = platform.system()
+    if system == "Windows":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif system == "Darwin":
+        base = Path.home() / "Library" / "Application Support"
     else:
-        path = Path.home() / APP_DIR_NAME
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    path = base / APP_DIR
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def config_path() -> Path:
-    return config_dir() / "config.json"
+def normalize_pair_code(value: str) -> str:
+    return "".join(ch for ch in str(value).upper() if ch.isalnum())
 
 
-def default_config() -> dict[str, Any]:
+def new_pair_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    raw = "".join(secrets.choice(alphabet) for _ in range(12))
+    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+
+
+def new_device_id() -> str:
+    return secrets.token_hex(8).upper()
+
+
+def default_config() -> dict:
     return {
-        "port": DEFAULT_PORT,
-        "mouse_key": _new_key(),
-        "keyboard_key": _new_key(),
+        "version": 2,
+        "device_id": new_device_id(),
+        "pair_code": new_pair_code(),
+        "control_port": DEFAULT_CONTROL_PORT,
+        "kvm_port": DEFAULT_KVM_PORT,
         "peer": {
             "host": "",
-            "port": DEFAULT_PORT,
-            "mouse_key": "",
-            "keyboard_key": "",
+            "pair_code": "",
             "direction": "right",
-            "mouse_enabled": True,
-            "keyboard_enabled": True,
+            "device_name": "",
+            "device_id": "",
         },
     }
 
 
-def load_config() -> dict[str, Any]:
-    path = config_path()
-    if not path.exists():
-        cfg = default_config()
-        save_config(cfg)
-        return cfg
-    try:
-        cfg = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        cfg = default_config()
-        save_config(cfg)
-        return cfg
-
-    defaults = default_config()
-    cfg.setdefault("port", defaults["port"])
-    cfg.setdefault("mouse_key", defaults["mouse_key"])
-    cfg.setdefault("keyboard_key", defaults["keyboard_key"])
-    peer = cfg.setdefault("peer", {})
-    for key, value in defaults["peer"].items():
-        peer.setdefault(key, value)
+def load_config() -> dict:
+    path = app_data_dir() / "config.json"
+    cfg = default_config()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text("utf-8"))
+            if isinstance(data, dict):
+                cfg.update({k: v for k, v in data.items() if k != "peer"})
+                if isinstance(data.get("peer"), dict):
+                    cfg["peer"].update(data["peer"])
+        except Exception:
+            pass
+    if not normalize_pair_code(cfg.get("pair_code", "")):
+        cfg["pair_code"] = new_pair_code()
+    if not cfg.get("device_id"):
+        cfg["device_id"] = new_device_id()
+    save_config(cfg)
     return cfg
 
 
-def save_config(cfg: dict[str, Any]) -> None:
-    path = config_path()
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(path)
+def save_config(cfg: dict) -> None:
+    path = app_data_dir() / "config.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+    tmp.replace(path)
 
 
-def regenerate_local_keys(cfg: dict[str, Any]) -> None:
-    cfg["mouse_key"] = _new_key()
-    cfg["keyboard_key"] = _new_key()
+def regenerate_pair_code(cfg: dict) -> str:
+    cfg["pair_code"] = new_pair_code()
     save_config(cfg)
+    return cfg["pair_code"]

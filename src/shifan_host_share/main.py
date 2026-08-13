@@ -1,9 +1,4 @@
-from .app import App
-
+from .app import run
 
 def main() -> None:
-    App().run()
-
-
-if __name__ == "__main__":
-    main()
+    run()

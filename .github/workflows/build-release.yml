@@ -12,6 +12,9 @@ concurrency:
   group: shifan-host-share-release
   cancel-in-progress: true
 
+env:
+  DESKFLOW_VERSION: "1.26.0"
+
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
@@ -22,16 +25,16 @@ jobs:
       - id: version
         shell: bash
         run: echo "tag=v$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
-      - name: Create release if needed
+      - name: Create or refresh release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; build files will be replaced."
+            gh release edit "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "v0.2：重构键鼠核心、现代 UI、设备配对和正式安装包。"
           else
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "Windows + macOS 首个可测试版本。请先阅读 README 中的系统权限与使用说明。"
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "v0.2：重构键鼠核心、现代 UI、设备配对和正式安装包。"
           fi
 
   build-windows:
@@ -43,38 +46,56 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - name: Install dependencies
+      - name: Install Python build dependencies
         run: python -m pip install -r requirements-build.txt pytest
       - name: Unit tests
         env:
           PYTHONPATH: src
         run: python -m pytest -q
-      - name: Prepare application icon
+      - name: Download exact user icon
         run: python scripts/prepare_icon.py
-      - name: Build Windows EXE
+      - name: Download Deskflow 1.26.0 Windows x64 engine
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+          $url="https://github.com/deskflow/deskflow/releases/download/v$env:DESKFLOW_VERSION/deskflow-$env:DESKFLOW_VERSION-win-x64-portable.7z"
+          curl.exe -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.7z $url
+          if ($LASTEXITCODE -ne 0) { throw "Deskflow download failed" }
+          New-Item -ItemType Directory -Force vendor-download | Out-Null
+          7z x deskflow.7z -ovendor-download -y
+          python scripts/normalize_deskflow_windows.py vendor-download vendor/Deskflow
+      - name: Build application directory
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --windowed `
             --name "ShifanAI-HostShare" `
             --icon "assets/AI.ico" `
             --paths "src" `
-            --collect-all pynput `
-            --collect-all cryptography `
+            --add-data "src/shifan_host_share/web;web" `
+            --collect-all webview `
             launcher.py
-          Copy-Item "dist/ShifanAI-HostShare.exe" "ShifanAI-HostShare-Windows-x64.exe"
-          Compress-Archive -Path "dist/ShifanAI-HostShare.exe" -DestinationPath "ShifanAI-HostShare-Windows-x64.zip" -Force
+          New-Item -ItemType Directory -Force "dist/ShifanAI-HostShare/engine" | Out-Null
+          Copy-Item "vendor/Deskflow" "dist/ShifanAI-HostShare/engine/Deskflow" -Recurse
+          & "dist/ShifanAI-HostShare/engine/Deskflow/deskflow-core.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Deskflow core is not executable" }
+      - name: Build real Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          $iscc="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "installer/windows.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          Compress-Archive -Path "dist/ShifanAI-HostShare/*" -DestinationPath "release/ShifanAI-HostShare-Portable-Windows-x64.zip" -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-Windows-x64
-          path: |
-            ShifanAI-HostShare-Windows-x64.exe
-            ShifanAI-HostShare-Windows-x64.zip
-      - name: Upload files to GitHub Release
+          name: ShifanAI-HostShare-Windows-x64-v0.2
+          path: release/*
+      - name: Upload Windows files to Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare-release.outputs.tag }}
         shell: pwsh
-        run: gh release upload "$env:TAG" "ShifanAI-HostShare-Windows-x64.exe" "ShifanAI-HostShare-Windows-x64.zip" --clobber
+        run: gh release upload "$env:TAG" release/* --clobber
 
   build-macos-arm:
     needs: prepare-release
@@ -85,15 +106,21 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - name: Install dependencies
-        run: python -m pip install -r requirements-build.txt pytest
-      - name: Unit tests
-        env:
-          PYTHONPATH: src
-        run: python -m pytest -q
-      - name: Prepare application icon
-        run: python scripts/prepare_icon.py
-      - name: Build macOS Apple Silicon app
+      - name: Install dependencies and test
+        run: |
+          python -m pip install -r requirements-build.txt pytest
+          PYTHONPATH=src python -m pytest -q
+          python scripts/prepare_icon.py
+      - name: Download Deskflow macOS Apple Silicon engine
+        shell: bash
+        run: |
+          curl -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-arm64.dmg"
+          MOUNT=$(hdiutil attach deskflow.dmg -nobrowse -readonly | awk '/\/Volumes\//{sub(/^.*\/Volumes\//,"/Volumes/"); print; exit}')
+          mkdir -p vendor
+          ditto "$MOUNT/Deskflow.app" "vendor/Deskflow.app"
+          hdiutil detach "$MOUNT"
+          "vendor/Deskflow.app/Contents/MacOS/deskflow-core" --version
+      - name: Build Apple Silicon app and DMG
         shell: bash
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir \
@@ -101,23 +128,26 @@ jobs:
             --icon "assets/AI.icns" \
             --osx-bundle-identifier "com.csshifan.shifanhostshare" \
             --paths "src" \
-            --collect-all pynput \
-            --collect-all cryptography \
+            --add-data "src/shifan_host_share/web:web" \
+            --collect-all webview \
             launcher.py
+          mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
+          ditto "vendor/Deskflow.app" "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
           codesign --force --deep --sign - "dist/视饭AI主机共享.app"
-          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "ShifanAI-HostShare-macOS-AppleSilicon.zip"
-          hdiutil create -volname "视饭AI主机共享" -srcfolder "dist/视饭AI主机共享.app" -ov -format UDZO "ShifanAI-HostShare-macOS-AppleSilicon.dmg"
+          mkdir -p release/dmgroot
+          ditto "dist/视饭AI主机共享.app" "release/dmgroot/视饭AI主机共享.app"
+          ln -s /Applications "release/dmgroot/Applications"
+          hdiutil create -volname "视饭AI主机共享" -srcfolder "release/dmgroot" -ov -format UDZO "release/ShifanAI-HostShare-macOS-AppleSilicon.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "release/ShifanAI-HostShare-macOS-AppleSilicon.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-macOS-AppleSilicon
-          path: |
-            ShifanAI-HostShare-macOS-AppleSilicon.dmg
-            ShifanAI-HostShare-macOS-AppleSilicon.zip
-      - name: Upload files to GitHub Release
+          name: ShifanAI-HostShare-macOS-AppleSilicon-v0.2
+          path: release/ShifanAI-HostShare-macOS-AppleSilicon.*
+      - name: Upload to Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare-release.outputs.tag }}
-        run: gh release upload "$TAG" "ShifanAI-HostShare-macOS-AppleSilicon.dmg" "ShifanAI-HostShare-macOS-AppleSilicon.zip" --clobber
+        run: gh release upload "$TAG" release/ShifanAI-HostShare-macOS-AppleSilicon.* --clobber
 
   build-macos-intel:
     needs: prepare-release
@@ -128,15 +158,21 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - name: Install dependencies
-        run: python -m pip install -r requirements-build.txt pytest
-      - name: Unit tests
-        env:
-          PYTHONPATH: src
-        run: python -m pytest -q
-      - name: Prepare application icon
-        run: python scripts/prepare_icon.py
-      - name: Build macOS Intel app
+      - name: Install dependencies and test
+        run: |
+          python -m pip install -r requirements-build.txt pytest
+          PYTHONPATH=src python -m pytest -q
+          python scripts/prepare_icon.py
+      - name: Download Deskflow macOS Intel engine
+        shell: bash
+        run: |
+          curl -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-x86_64.dmg"
+          MOUNT=$(hdiutil attach deskflow.dmg -nobrowse -readonly | awk '/\/Volumes\//{sub(/^.*\/Volumes\//,"/Volumes/"); print; exit}')
+          mkdir -p vendor
+          ditto "$MOUNT/Deskflow.app" "vendor/Deskflow.app"
+          hdiutil detach "$MOUNT"
+          "vendor/Deskflow.app/Contents/MacOS/deskflow-core" --version
+      - name: Build Intel app and DMG
         shell: bash
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir \
@@ -144,20 +180,23 @@ jobs:
             --icon "assets/AI.icns" \
             --osx-bundle-identifier "com.csshifan.shifanhostshare" \
             --paths "src" \
-            --collect-all pynput \
-            --collect-all cryptography \
+            --add-data "src/shifan_host_share/web:web" \
+            --collect-all webview \
             launcher.py
+          mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
+          ditto "vendor/Deskflow.app" "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
           codesign --force --deep --sign - "dist/视饭AI主机共享.app"
-          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "ShifanAI-HostShare-macOS-Intel.zip"
-          hdiutil create -volname "视饭AI主机共享" -srcfolder "dist/视饭AI主机共享.app" -ov -format UDZO "ShifanAI-HostShare-macOS-Intel.dmg"
+          mkdir -p release/dmgroot
+          ditto "dist/视饭AI主机共享.app" "release/dmgroot/视饭AI主机共享.app"
+          ln -s /Applications "release/dmgroot/Applications"
+          hdiutil create -volname "视饭AI主机共享" -srcfolder "release/dmgroot" -ov -format UDZO "release/ShifanAI-HostShare-macOS-Intel.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "release/ShifanAI-HostShare-macOS-Intel.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-macOS-Intel
-          path: |
-            ShifanAI-HostShare-macOS-Intel.dmg
-            ShifanAI-HostShare-macOS-Intel.zip
-      - name: Upload files to GitHub Release
+          name: ShifanAI-HostShare-macOS-Intel-v0.2
+          path: release/ShifanAI-HostShare-macOS-Intel.*
+      - name: Upload to Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare-release.outputs.tag }}
-        run: gh release upload "$TAG" "ShifanAI-HostShare-macOS-Intel.dmg" "ShifanAI-HostShare-macOS-Intel.zip" --clobber
+        run: gh release upload "$TAG" release/ShifanAI-HostShare-macOS-Intel.* --clobber

@@ -1,0 +1,153 @@
+name: Build macOS Release Assets
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shifan-host-share-macos-assets
+  cancel-in-progress: true
+
+env:
+  DESKFLOW_VERSION: "1.26.0"
+
+jobs:
+  macos-arm:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install and test
+        shell: bash
+        run: |
+          set -e
+          python -m pip install -r requirements-build.txt pytest
+          PYTHONPATH=src python -m pytest -q
+          python scripts/prepare_icon.py
+      - name: Download and mount Deskflow Apple Silicon
+        shell: bash
+        run: |
+          set -e
+          curl -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-arm64.dmg"
+          MOUNT="$RUNNER_TEMP/deskflow-mount-arm"
+          rm -rf "$MOUNT"
+          mkdir -p "$MOUNT" vendor
+          (yes || true) | PAGER=cat hdiutil attach deskflow.dmg -nobrowse -readonly -mountpoint "$MOUNT"
+          test -d "$MOUNT/Deskflow.app"
+          ditto "$MOUNT/Deskflow.app" vendor/Deskflow.app
+          hdiutil detach "$MOUNT"
+          test -x "vendor/Deskflow.app/Contents/MacOS/deskflow-core"
+          "vendor/Deskflow.app/Contents/MacOS/deskflow-core" --version
+      - name: Build, sign, launch-test and package Apple Silicon
+        shell: bash
+        run: |
+          set -e
+          python -m PyInstaller --noconfirm --clean --windowed --onedir \
+            --name "视饭AI主机共享" \
+            --icon assets/AI.icns \
+            --osx-bundle-identifier com.csshifan.shifanhostshare \
+            --paths src \
+            --add-data "assets:assets" \
+            launcher.py
+          mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
+          ditto vendor/Deskflow.app "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
+          codesign --force --deep --sign - "dist/视饭AI主机共享.app"
+          codesign --verify --deep --strict --verbose=2 "dist/视饭AI主机共享.app"
+          test -x "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app/Contents/MacOS/deskflow-core"
+          QT_QPA_PLATFORM=offscreen "dist/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享" &
+          PID=$!
+          sleep 6
+          kill -0 "$PID"
+          kill "$PID" || true
+          wait "$PID" || true
+          mkdir -p release/dmgroot
+          ditto "dist/视饭AI主机共享.app" "release/dmgroot/视饭AI主机共享.app"
+          ln -s /Applications "release/dmgroot/Applications"
+          hdiutil create -volname "视饭AI主机共享" -srcfolder release/dmgroot -ov -format UDZO "release/ShifanAI-HostShare-macOS-AppleSilicon.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "release/ShifanAI-HostShare-macOS-AppleSilicon.zip"
+          TEST_MOUNT="$RUNNER_TEMP/shifan-test-arm"
+          rm -rf "$TEST_MOUNT"
+          mkdir -p "$TEST_MOUNT"
+          hdiutil attach "release/ShifanAI-HostShare-macOS-AppleSilicon.dmg" -nobrowse -readonly -mountpoint "$TEST_MOUNT"
+          test -x "$TEST_MOUNT/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享"
+          hdiutil detach "$TEST_MOUNT"
+      - name: Upload Apple Silicon assets to v0.7.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload v0.7.0 release/ShifanAI-HostShare-macOS-AppleSilicon.dmg release/ShifanAI-HostShare-macOS-AppleSilicon.zip --clobber
+
+  macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install and test
+        shell: bash
+        run: |
+          set -e
+          python -m pip install -r requirements-build.txt pytest
+          PYTHONPATH=src python -m pytest -q
+          python scripts/prepare_icon.py
+      - name: Download and mount Deskflow Intel
+        shell: bash
+        run: |
+          set -e
+          curl -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-x86_64.dmg"
+          MOUNT="$RUNNER_TEMP/deskflow-mount-intel"
+          rm -rf "$MOUNT"
+          mkdir -p "$MOUNT" vendor
+          (yes || true) | PAGER=cat hdiutil attach deskflow.dmg -nobrowse -readonly -mountpoint "$MOUNT"
+          test -d "$MOUNT/Deskflow.app"
+          ditto "$MOUNT/Deskflow.app" vendor/Deskflow.app
+          hdiutil detach "$MOUNT"
+          test -x "vendor/Deskflow.app/Contents/MacOS/deskflow-core"
+          "vendor/Deskflow.app/Contents/MacOS/deskflow-core" --version
+      - name: Build, sign, launch-test and package Intel
+        shell: bash
+        run: |
+          set -e
+          python -m PyInstaller --noconfirm --clean --windowed --onedir \
+            --name "视饭AI主机共享" \
+            --icon assets/AI.icns \
+            --osx-bundle-identifier com.csshifan.shifanhostshare \
+            --paths src \
+            --add-data "assets:assets" \
+            launcher.py
+          mkdir -p "dist/视饭AI主机共享.app/Contents/Resources/engine"
+          ditto vendor/Deskflow.app "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app"
+          codesign --force --deep --sign - "dist/视饭AI主机共享.app"
+          codesign --verify --deep --strict --verbose=2 "dist/视饭AI主机共享.app"
+          test -x "dist/视饭AI主机共享.app/Contents/Resources/engine/Deskflow.app/Contents/MacOS/deskflow-core"
+          QT_QPA_PLATFORM=offscreen "dist/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享" &
+          PID=$!
+          sleep 6
+          kill -0 "$PID"
+          kill "$PID" || true
+          wait "$PID" || true
+          mkdir -p release/dmgroot
+          ditto "dist/视饭AI主机共享.app" "release/dmgroot/视饭AI主机共享.app"
+          ln -s /Applications "release/dmgroot/Applications"
+          hdiutil create -volname "视饭AI主机共享" -srcfolder release/dmgroot -ov -format UDZO "release/ShifanAI-HostShare-macOS-Intel.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "dist/视饭AI主机共享.app" "release/ShifanAI-HostShare-macOS-Intel.zip"
+          TEST_MOUNT="$RUNNER_TEMP/shifan-test-intel"
+          rm -rf "$TEST_MOUNT"
+          mkdir -p "$TEST_MOUNT"
+          hdiutil attach "release/ShifanAI-HostShare-macOS-Intel.dmg" -nobrowse -readonly -mountpoint "$TEST_MOUNT"
+          test -x "$TEST_MOUNT/视饭AI主机共享.app/Contents/MacOS/视饭AI主机共享"
+          hdiutil detach "$TEST_MOUNT"
+      - name: Upload Intel assets to v0.7.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload v0.7.0 release/ShifanAI-HostShare-macOS-Intel.dmg release/ShifanAI-HostShare-macOS-Intel.zip --clobber

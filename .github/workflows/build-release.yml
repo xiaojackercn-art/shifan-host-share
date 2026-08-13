@@ -115,7 +115,19 @@ jobs:
         shell: bash
         run: |
           curl -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-arm64.dmg"
-          MOUNT=$(hdiutil attach deskflow.dmg -nobrowse -readonly | awk '/\/Volumes\//{sub(/^.*\/Volumes\//,"/Volumes/"); print; exit}')
+          hdiutil attach deskflow.dmg -nobrowse -readonly -acceptlicense -plist > deskflow-mount.plist
+          MOUNT=$(python - <<'PY'
+          import plistlib
+          with open('deskflow-mount.plist','rb') as f:
+              data=plistlib.load(f)
+          for entity in data.get('system-entities',[]):
+              mount=entity.get('mount-point')
+              if mount:
+                  print(mount)
+                  break
+          PY
+          )
+          test -n "$MOUNT"
           mkdir -p vendor
           ditto "$MOUNT/Deskflow.app" "vendor/Deskflow.app"
           hdiutil detach "$MOUNT"
@@ -167,7 +179,19 @@ jobs:
         shell: bash
         run: |
           curl -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 300 -o deskflow.dmg "https://github.com/deskflow/deskflow/releases/download/v${DESKFLOW_VERSION}/deskflow-${DESKFLOW_VERSION}-macos-x86_64.dmg"
-          MOUNT=$(hdiutil attach deskflow.dmg -nobrowse -readonly | awk '/\/Volumes\//{sub(/^.*\/Volumes\//,"/Volumes/"); print; exit}')
+          hdiutil attach deskflow.dmg -nobrowse -readonly -acceptlicense -plist > deskflow-mount.plist
+          MOUNT=$(python - <<'PY'
+          import plistlib
+          with open('deskflow-mount.plist','rb') as f:
+              data=plistlib.load(f)
+          for entity in data.get('system-entities',[]):
+              mount=entity.get('mount-point')
+              if mount:
+                  print(mount)
+                  break
+          PY
+          )
+          test -n "$MOUNT"
           mkdir -p vendor
           ditto "$MOUNT/Deskflow.app" "vendor/Deskflow.app"
           hdiutil detach "$MOUNT"

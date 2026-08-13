@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Callable
 
 from .config import app_data_dir
@@ -50,6 +50,17 @@ def reverse_direction(direction: str) -> str:
     return {"right": "left", "left": "right", "up": "down", "down": "up"}.get(direction, "left")
 
 
+def _qsettings_path(path: PurePath) -> str:
+    """Return a path representation that Qt/QSettings preserves on every OS.
+
+    QSettings INI parsing treats backslashes as escape characters. A normal
+    Windows path such as C:\\Users\\... can therefore be read back as
+    C:Users... with the separators removed. Deskflow itself writes paths with
+    forward slashes on Windows, so always serialize file paths in POSIX form.
+    """
+    return path.as_posix()
+
+
 def build_server_config(server_name: str, peer_names: dict[str, str]) -> str:
     required = {"left", "right", "up", "down"}
     if set(peer_names) != required:
@@ -81,7 +92,7 @@ def _write_settings(
     computer_name: str,
     port: int,
     remote_host: str = "",
-    server_config: Path | None = None,
+    server_config: PurePath | None = None,
 ) -> None:
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.optionxform = str
@@ -104,7 +115,7 @@ def _write_settings(
     if server_config is not None:
         cfg["server"] = {
             "externalConfig": "true",
-            "externalConfigFile": str(server_config),
+            "externalConfigFile": _qsettings_path(server_config),
         }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:

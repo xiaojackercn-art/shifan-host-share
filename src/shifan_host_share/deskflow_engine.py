@@ -71,35 +71,32 @@ def build_server_config(server_name: str, client_name: str, direction: str) -> s
     )
 
 
-def _write_settings(path: Path, *, computer_name: str, port: int, remote_host: str = "", server_config: Path | None = None) -> None:
-    """Write the QSettings/INI file consumed by Deskflow 1.26 deskflow-core.
-
-    Deskflow 1.26's core only accepts the mode plus --settings. Runtime options such
-    as host, port, screen name, external server config and TLS are read from this file.
-    """
+def _write_settings(
+    path: Path,
+    *,
+    computer_name: str,
+    port: int,
+    remote_host: str = "",
+    server_config: Path | None = None,
+    interface: str = "",
+) -> None:
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.optionxform = str
-    cfg["core"] = {
+    core = {
         "computerName": computer_name,
         "port": str(int(port)),
-        "processMode": "1",  # Settings::ProcessMode::Desktop
+        "processMode": "1",  # Desktop mode; official Deskflow workaround avoids the Windows daemon path.
         "useHooks": "true",
     }
-    cfg["security"] = {
-        # Pair authorization is handled by the 视饭AI HMAC control channel.  Keeping
-        # Deskflow's transport plaintext avoids an extra interactive fingerprint
-        # dialog that would break one-click pairing. Use only on a trusted LAN.
-        "tlsEnabled": "false",
-        "checkPeerFingerprints": "false",
-    }
-    cfg["log"] = {"level": "4", "toFile": "false"}  # INFO
+    if interface:
+        core["interface"] = interface
+    cfg["core"] = core
+    cfg["security"] = {"tlsEnabled": "false", "checkPeerFingerprints": "false"}
+    cfg["log"] = {"level": "4", "toFile": "false"}
     if remote_host:
         cfg["client"] = {"remoteHost": remote_host, "languageSync": "true"}
     if server_config is not None:
-        cfg["server"] = {
-            "externalConfig": "true",
-            "externalConfigFile": str(server_config),
-        }
+        cfg["server"] = {"externalConfig": "true", "externalConfigFile": str(server_config)}
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         cfg.write(fh, space_around_delimiters=False)
@@ -150,11 +147,8 @@ class DeskflowEngine:
             self._client_connected = False
         self._terminate(proc)
 
-    def start_server(self, server_name: str, client_name: str, direction: str, port: int) -> tuple[bool, str]:
-        # A Deskflow desktop process is single-instance by default; make sure this
-        # machine is not still acting as a client before switching it to server.
-        self.stop_client()
-        self.stop_server()
+    def start_server(self, server_name: str, client_name: str, direction: str, port: int, listen_ip: str = "") -> tuple[bool, str]:
+        self.stop_all()
         path = core_path()
         if not path.exists():
             return False, f"Deskflow 核心缺失：{path}"
@@ -163,19 +157,17 @@ class DeskflowEngine:
         server_config = runtime / "deskflow-server.conf"
         settings = runtime / "deskflow-server-settings.ini"
         server_config.write_text(build_server_config(server_name, client_name, direction), "utf-8")
-        _write_settings(settings, computer_name=server_name, port=port, server_config=server_config)
-        command = [str(path), "server", "--settings", str(settings)]
-        ok, message, proc = self._spawn(command, "server")
+        _write_settings(settings, computer_name=server_name, port=port, server_config=server_config, interface=listen_ip)
+        ok, message, proc = self._spawn([str(path), "server", "--settings", str(settings)], "server")
         if ok:
             with self._lock:
                 self.server_process = proc
                 self._server_connected = False
-            return True, "键鼠共享核心已启动，正在等待第二台电脑"
+            return True, f"Deskflow 主控已监听 {listen_ip or '全部网卡'}:{port}"
         return False, message
 
     def start_client(self, server_ip: str, server_port: int, client_name: str) -> tuple[bool, str]:
-        self.stop_server()
-        self.stop_client()
+        self.stop_all()
         path = core_path()
         if not path.exists():
             return False, f"Deskflow 核心缺失：{path}"
@@ -183,13 +175,12 @@ class DeskflowEngine:
         runtime.mkdir(parents=True, exist_ok=True)
         settings = runtime / "deskflow-client-settings.ini"
         _write_settings(settings, computer_name=client_name, port=server_port, remote_host=server_ip)
-        command = [str(path), "client", "--settings", str(settings)]
-        ok, message, proc = self._spawn(command, "client")
+        ok, message, proc = self._spawn([str(path), "client", "--settings", str(settings)], "client")
         if ok:
             with self._lock:
                 self.client_process = proc
                 self._client_connected = False
-            return True, "已收到主控电脑请求，正在建立键鼠通道"
+            return True, f"Deskflow 第二台电脑正在主动连接 {server_ip}:{server_port}"
         return False, message
 
     def _spawn(self, command: list[str], role: str) -> tuple[bool, str, subprocess.Popen | None]:
@@ -206,12 +197,12 @@ class DeskflowEngine:
         try:
             proc = subprocess.Popen(command, **kwargs)
         except Exception as exc:
-            return False, f"无法启动键鼠共享核心：{exc}", None
+            return False, f"无法启动 Deskflow：{exc}", None
         threading.Thread(target=self._read_output, args=(proc, role), name=f"deskflow-{role}-log", daemon=True).start()
-        time.sleep(0.8)
+        time.sleep(1.0)
         if proc.poll() is not None:
-            log = self.recent_log(role, 10)
-            return False, f"键鼠共享核心启动失败（退出码 {proc.returncode}）{': ' + log if log else ''}", None
+            log = self.recent_log(role, 12)
+            return False, f"Deskflow 启动失败（退出码 {proc.returncode}）{': ' + log if log else ''}", None
         return True, "ok", proc
 
     def _read_output(self, proc: subprocess.Popen, role: str) -> None:
@@ -224,13 +215,13 @@ class DeskflowEngine:
             with self._lock:
                 target = self._server_log if role == "server" else self._client_log
                 target.append(line)
-                del target[:-100]
+                del target[:-120]
             low = line.lower()
             if role == "server" and ("has connected" in low or "accepted client connection" in low):
                 with self._lock:
                     self._server_connected = True
-                self.status_cb("connected", "连接成功 · 鼠标可以直接跨屏，键盘会自动跟随")
-            elif role == "client" and "connected to server" in low:
+                self.status_cb("connected", "连接成功 · 鼠标可以跨屏，键盘会自动跟随")
+            elif role == "client" and ("connected to server" in low or "connected to secure socket" in low):
                 with self._lock:
                     self._client_connected = True
                 self.status_cb("remote_connected", "已连接主控电脑 · 正在接受键鼠控制")

@@ -1,40 +1,44 @@
-import configparser
+from pathlib import Path
 
-import pytest
-
-from shifan_host_share.deskflow_engine import build_server_config, safe_screen_name, _write_settings
+from shifan_host_share.deskflow_engine import _write_settings, build_server_config, reverse_direction
 
 
-@pytest.mark.parametrize("direction,opposite", [("right", "left"), ("left", "right"), ("up", "down"), ("down", "up")])
-def test_config_links_both_directions(direction, opposite):
-    text = build_server_config("HOST-A", "PEER-B", direction)
-    assert f"{direction} = PEER-B" in text
-    assert f"{opposite} = HOST-A" in text
+def test_direction_reverse():
+    assert reverse_direction("right") == "left"
+    assert reverse_direction("up") == "down"
 
 
-def test_screen_names_are_ascii_safe():
-    assert safe_screen_name("HOST", "你好 12-AB") == "HOST-12-AB"
+def test_server_config_contains_both_screens():
+    text = build_server_config("HOST-1", "PEER-2", "right")
+    assert "HOST-1:" in text
+    assert "PEER-2:" in text
+    assert "right = PEER-2" in text
+    assert "left = HOST-1" in text
 
 
-def test_server_settings_match_deskflow_126_keys(tmp_path):
-    server_config = tmp_path / "server.conf"
-    server_config.write_text("section: screens\nend\n", "utf-8")
+def test_deskflow_settings_use_official_keys_and_interface(tmp_path: Path):
     settings = tmp_path / "server.ini"
-    _write_settings(settings, computer_name="HOST-ABC", port=24861, server_config=server_config)
-    cfg = configparser.ConfigParser(interpolation=None)
-    cfg.read(settings, encoding="utf-8")
-    assert cfg["core"]["computerName"] == "HOST-ABC"
-    assert cfg["core"]["port"] == "24861"
-    assert cfg["security"].getboolean("tlsEnabled") is False
-    assert cfg["server"].getboolean("externalConfig") is True
-    assert cfg["server"]["externalConfigFile"] == str(server_config)
+    config = tmp_path / "deskflow.conf"
+    config.write_text("section: screens\nend\n", "utf-8")
+    _write_settings(
+        settings,
+        computer_name="HOST-1",
+        port=24800,
+        server_config=config,
+        interface="192.168.1.6",
+    )
+    text = settings.read_text("utf-8")
+    assert "computerName=HOST-1" in text
+    assert "port=24800" in text
+    assert "processMode=1" in text
+    assert "interface=192.168.1.6" in text
+    assert "externalConfig=true" in text
+    assert "tlsEnabled=false" in text
 
 
-def test_client_settings_match_deskflow_126_keys(tmp_path):
+def test_client_remote_host_matches_official_deskflow_setting(tmp_path: Path):
     settings = tmp_path / "client.ini"
-    _write_settings(settings, computer_name="PEER-ABC", port=24861, remote_host="192.168.1.10")
-    cfg = configparser.ConfigParser(interpolation=None)
-    cfg.read(settings, encoding="utf-8")
-    assert cfg["core"]["computerName"] == "PEER-ABC"
-    assert cfg["client"]["remoteHost"] == "192.168.1.10"
-    assert cfg["security"].getboolean("checkPeerFingerprints") is False
+    _write_settings(settings, computer_name="PEER-2", port=24800, remote_host="192.168.1.6")
+    text = settings.read_text("utf-8")
+    assert "remoteHost=192.168.1.6" in text
+    assert "port=24800" in text

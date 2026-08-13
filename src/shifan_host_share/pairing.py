@@ -13,14 +13,14 @@ from typing import Callable
 
 from .config import normalize_pair_code
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MAX_LINE = 64 * 1024
 CLOCK_SKEW = 90
 
 
 def _key(pair_code: str) -> bytes:
     normalized = normalize_pair_code(pair_code)
-    return hashlib.sha256(("SHIFANAI-PAIR-V2|" + normalized).encode()).digest()
+    return hashlib.sha256(("SHIFANAI-PAIR-V3|" + normalized).encode()).digest()
 
 
 def _canonical(payload: dict) -> bytes:
@@ -43,8 +43,7 @@ def verify_payload(payload: dict, pair_code: str, now: int | None = None) -> boo
     now = int(time.time()) if now is None else int(now)
     if abs(now - ts) > CLOCK_SKEW:
         return False
-    expected = sign_payload(payload, pair_code)
-    return hmac.compare_digest(proof, expected)
+    return hmac.compare_digest(proof, sign_payload(payload, pair_code))
 
 
 @dataclass
@@ -52,6 +51,8 @@ class ProbeInfo:
     device_name: str
     device_id: str
     version: str
+    host_ready: bool
+    role: str
 
 
 class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
@@ -60,13 +61,27 @@ class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
 
 
 class PairingService:
-    def __init__(self, host: str, port: int, pair_code_provider: Callable[[], str], device_info_provider: Callable[[], dict], on_start_client: Callable[[str, int, str], tuple[bool, str]], on_stop_client: Callable[[], None], on_status: Callable[[str], None] | None = None):
+    """Small control channel that lives on the future Deskflow server only.
+
+    The important v0.6 design rule is directional: the secondary computer makes
+    every network connection to the host. The host never opens a TCP connection
+    back to the secondary computer.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        pair_code_provider: Callable[[], str],
+        device_info_provider: Callable[[], dict],
+        on_authorize_client: Callable[[str, str], tuple[bool, str, int]],
+        on_status: Callable[[str], None] | None = None,
+    ):
         self.host = host
         self.port = int(port)
         self.pair_code_provider = pair_code_provider
         self.device_info_provider = device_info_provider
-        self.on_start_client = on_start_client
-        self.on_stop_client = on_stop_client
+        self.on_authorize_client = on_authorize_client
         self.on_status = on_status or (lambda _: None)
         self._server: _ThreadingTCPServer | None = None
         self._thread: threading.Thread | None = None
@@ -83,7 +98,7 @@ class PairingService:
                 try:
                     req = json.loads(raw.decode("utf-8"))
                     if not isinstance(req, dict):
-                        raise ValueError
+                        raise ValueError("request must be an object")
                     response = service._handle(req)
                 except Exception as exc:
                     response = {"ok": False, "error": f"请求格式错误：{exc}"}
@@ -91,9 +106,9 @@ class PairingService:
 
         self._server = _ThreadingTCPServer((self.host, self.port), Handler)
         self.port = int(self._server.server_address[1])
-        self._thread = threading.Thread(target=self._server.serve_forever, name=f"pairing-service-{self.port}", daemon=True)
+        self._thread = threading.Thread(target=self._server.serve_forever, name="pairing-service", daemon=True)
         self._thread.start()
-        self.on_status(f"设备配对服务已启动 · {self.port}")
+        self.on_status(f"本地配对服务已监听 TCP {self.port}")
 
     def stop(self) -> None:
         if self._server:
@@ -102,70 +117,78 @@ class PairingService:
         self._server = None
 
     def _handle(self, req: dict) -> dict:
-        action = req.get("action")
         if req.get("protocol") != PROTOCOL_VERSION:
-            return {"ok": False, "error": "软件版本不兼容，请两台电脑安装相同最新版"}
+            return {"ok": False, "error": "软件协议版本不同，请两台电脑都安装 v0.6.0"}
+        action = req.get("action")
         if action == "probe":
             return {"ok": True, **self.device_info_provider()}
-        if action not in {"start_client", "stop_client"}:
+        if action != "authorize_client":
             return {"ok": False, "error": "不支持的操作"}
         if not verify_payload(req, self.pair_code_provider()):
-            return {"ok": False, "error": "配对码不正确，请重新复制第二台电脑的配对码"}
-        if action == "stop_client":
-            self.on_stop_client()
-            return {"ok": True}
-        server_ip = str(req.get("server_ip", "")).strip()
+            return {"ok": False, "error": "配对码不正确，请输入主控电脑显示的配对码"}
+
         client_name = str(req.get("client_name", "")).strip()
-        try:
-            server_port = int(req.get("server_port", 24861))
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "服务端口无效"}
-        ok, message = self.on_start_client(server_ip, server_port, client_name)
-        return {"ok": ok, "message": message, "error": "" if ok else message}
+        direction = str(req.get("direction", "right")).strip()
+        if not client_name:
+            return {"ok": False, "error": "第二台电脑名称无效"}
+        if direction not in {"left", "right", "up", "down"}:
+            return {"ok": False, "error": "屏幕位置无效"}
+        ok, message, server_port = self.on_authorize_client(client_name, direction)
+        return {"ok": ok, "message": message, "error": "" if ok else message, "server_port": int(server_port)}
 
 
 class PairingClient:
     @staticmethod
-    def _request(host: str, port: int, payload: dict, timeout: float = 4.0, source_ip: str | None = None) -> dict:
+    def _request(host: str, port: int, payload: dict, timeout: float = 3.0) -> dict:
+        """Use the OS routing table exactly like Deskflow does.
+
+        v0.5 tried to bind sockets to individual Wi-Fi/WSL/VPN addresses. That
+        could manufacture WSAENETUNREACH (10051) even when another route was
+        valid. v0.6 deliberately does not bind a source address.
+        """
         data = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        raw = b""
-        try:
+        with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            if source_ip:
-                sock.bind((source_ip, 0))
-            sock.connect((host, int(port)))
             sock.sendall(data)
             file = sock.makefile("rb")
             raw = file.readline(MAX_LINE)
-        finally:
-            sock.close()
         if not raw:
-            raise ConnectionError("第二台电脑没有返回数据")
+            raise ConnectionError("主控电脑没有返回配对数据")
         result = json.loads(raw.decode("utf-8"))
         if not isinstance(result, dict):
-            raise ConnectionError("第二台电脑返回数据格式错误")
+            raise ConnectionError("主控电脑返回数据格式错误")
         return result
 
     @classmethod
-    def probe(cls, host: str, port: int, source_ip: str | None = None, timeout: float = 1.4) -> ProbeInfo:
+    def probe(cls, host: str, port: int, timeout: float = 2.5) -> ProbeInfo:
         payload = {"protocol": PROTOCOL_VERSION, "action": "probe", "nonce": secrets.token_hex(12)}
-        result = cls._request(host, port, payload, timeout=timeout, source_ip=source_ip)
+        result = cls._request(host, port, payload, timeout=timeout)
         if not result.get("ok"):
-            raise ConnectionError(str(result.get("error", "无法识别第二台电脑")))
-        return ProbeInfo(str(result.get("device_name", host)), str(result.get("device_id", "")), str(result.get("version", "")))
+            raise ConnectionError(str(result.get("error", "无法识别主控电脑")))
+        return ProbeInfo(
+            str(result.get("device_name", host)),
+            str(result.get("device_id", "")),
+            str(result.get("version", "")),
+            bool(result.get("host_ready")),
+            str(result.get("role", "idle")),
+        )
 
     @classmethod
-    def start_remote_client(cls, host: str, port: int, pair_code: str, server_ip: str, server_port: int, client_name: str, source_ip: str | None = None) -> dict:
-        payload = {"protocol": PROTOCOL_VERSION, "action": "start_client", "timestamp": int(time.time()), "nonce": secrets.token_hex(16), "server_ip": server_ip, "server_port": int(server_port), "client_name": client_name}
+    def authorize_client(
+        cls,
+        host: str,
+        port: int,
+        pair_code: str,
+        client_name: str,
+        direction: str,
+    ) -> dict:
+        payload = {
+            "protocol": PROTOCOL_VERSION,
+            "action": "authorize_client",
+            "timestamp": int(time.time()),
+            "nonce": secrets.token_hex(16),
+            "client_name": client_name,
+            "direction": direction,
+        }
         payload["proof"] = sign_payload(payload, pair_code)
-        return cls._request(host, port, payload, timeout=7.0, source_ip=source_ip)
-
-    @classmethod
-    def stop_remote_client(cls, host: str, port: int, pair_code: str, source_ip: str | None = None) -> None:
-        payload = {"protocol": PROTOCOL_VERSION, "action": "stop_client", "timestamp": int(time.time()), "nonce": secrets.token_hex(16)}
-        payload["proof"] = sign_payload(payload, pair_code)
-        try:
-            cls._request(host, port, payload, timeout=3.0, source_ip=source_ip)
-        except Exception:
-            pass
+        return cls._request(host, port, payload, timeout=7.0)

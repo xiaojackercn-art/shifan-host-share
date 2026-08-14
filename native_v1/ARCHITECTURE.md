@@ -1,75 +1,113 @@
-# 视饭AI：主机共享 v1 Native Architecture
+# 视饭AI：主机共享 v1 原生架构
 
-v1 is a clean break from the v0.x Python + Deskflow wrapper architecture.
+## 1. 设计目标
 
-## Why this exists
+v1 的目标不是继续维护旧版 Python + Deskflow 包装层，而是把“发现、配对、输入捕获、传输、输入注入、剪贴板”统一到一个原生桌面进程中，减少状态不同步和额外转发层造成的延迟。
 
-The v0.x line wrapped a separately configured Deskflow process and depended on TCP 24800 readiness/configuration. That added several layers whose state could disagree: Python UI, bridge/listener, Windows firewall rules, Deskflow settings, Deskflow protocol handshake and remote network state.
+当前原生主线基于 MIT 许可的 MyKVM Rust/Tauri 架构，固定在上游提交 `a2ea4164861de31b562c8417eeb7879dbc8c23cb`，再由本仓库的产品补丁进行品牌、交互、性能与 Windows 安装加固。
 
-v1 removes that stack instead of adding more compatibility probes.
+## 2. 数据通道
 
-## Foundation
+### 局域网发现
 
-The initial v1 implementation is based on the MIT-licensed MyKVM Rust/Tauri architecture, pinned to upstream commit `a2ea4164861de31b562c8417eeb7879dbc8c23cb`, then branded and adapted for 视饭AI.
+- UDP `47833`
+- 用于设备广播、发现和连接信息交换
 
-We selected this foundation because the native core already implements the pieces required by this product:
+### 键鼠输入
 
-- Rust native core on Windows and macOS
-- Windows native keyboard/mouse hooks and injection
-- macOS CoreGraphics input capture/injection and permission handling
-- UDP LAN discovery
-- QUIC transport encrypted with TLS 1.3
-- QUIC datagrams for low-latency input
-- reliable QUIC streams for clipboard/file payloads
-- screen topology and edge crossing
-- reconnect/runtime state management
-- Windows elevated input helper support
-- Tauri installers for Windows and macOS
+- QUIC Datagram / TLS 1.3
+- 默认 UDP `47834`
+- 鼠标移动属于 latest-wins 数据，不等待可靠流确认
+- 点击、滚轮和键盘事件沿相同低延迟输入平面传输
 
-The original upstream source remains MIT licensed and attribution is retained in `THIRD_PARTY_NOTICES.md`.
+### 剪贴板与文件
 
-## v1 network model
+- QUIC Stream
+- 与高频鼠标 Datagram 分开，避免大数据传输阻塞输入平面
 
-Default network transport:
+## 3. Windows 输入链路
 
-- UDP 47833: local peer discovery/probing
-- UDP 47834: QUIC/TLS 1.3 input + clipboard transport
+### 主控电脑
 
-There is no Deskflow process, no TCP 24800 listener and no Python TCP forwarding layer.
+1. `WH_MOUSE_LL` 捕获鼠标。
+2. `WH_KEYBOARD_LL` 捕获键盘。
+3. 根据屏幕拓扑判断是否进入远端屏幕。
+4. 鼠标坐标转换为远端屏幕相对坐标。
+5. 通过 QUIC Datagram 发往被控电脑。
 
-The transport uses the peer certificate/public key advertised during discovery and pins the peer for encrypted QUIC communication. The product is still explicitly intended for trusted LAN use.
+### 被控电脑
 
-## Pairing model
+1. 接收并验证输入 Datagram。
+2. 映射远端屏幕坐标到本机原生显示器坐标。
+3. 鼠标移动使用 `SetCursorPos` 直接执行绝对定位。
+4. 点击、滚轮和键盘使用 `SendInput`。
+5. 键盘优先使用扫描码注入；无扫描码映射时回退到虚拟键。
 
-The upstream pairing path already supports an explicit pairing challenge, persistent cluster credentials, paired-controller ACLs and credential validation before accepting input.
+### v1.0.0-alpha.3 的低延迟调整
 
-For the first v1 alpha we keep the proven challenge/confirm flow but change the human code to the product format `XXXX-XXXX-XXXX`. This is intentionally narrower than redesigning transport and pairing simultaneously. After the two-machine native transport has passed real-device testing, the UX can be inverted to the final product requirement: host displays a persistent key and the secondary enters it without an IP address.
+早期实现中，Windows 鼠标 Hook 在远端控制期间会持有高频活动目标锁完成坐标计算、发送和光标回钉；键盘 Hook 读取同一状态时存在争用机会。持续快速移动鼠标时，这种设计会放大输入排队感。
 
-## Packaging
+alpha.3 做了三项调整：
 
-Windows:
+- 鼠标移动发送间隔从 8 ms 降为 4 ms；
+- 键盘使用独立的远端目标缓存，不再依赖高频鼠标状态锁；
+- 被控端鼠标移动使用更短的绝对定位路径，减少每个鼠标包的注入开销。
 
-- Tauri/NSIS installer
-- custom product icon
-- bundled elevated input helper
-- Windows firewall configuration from the native upstream implementation
+这些改动只针对输入热路径，不改变配对、安全校验和剪贴板协议。
 
-macOS:
+## 4. Windows 权限模型
 
-- native `.app` + `.dmg`
-- minimum macOS 12
-- Apple Silicon and Intel builds
-- first run still requires Accessibility/Input Monitoring permission
+普通桌面场景默认在当前登录用户进程内注入输入，这是控制普通应用最稳定的路径。
 
-## Release gates
+锁屏、UAC 和安全桌面不属于普通桌面。项目保留系统级输入辅助服务，用于需要更高权限的场景。服务内部名称属于协议/兼容性标识，不参与品牌替换。
 
-A v1 build is not called stable merely because CI compiled it. The release pipeline verifies source build and packaging. Real-device acceptance still requires:
+v1.0.0-alpha.3 修复了安装脚本误替换 `MyKVMInputService` 内部服务名的问题，避免安装更新流程找不到已存在的输入服务。
 
-1. Windows 11 -> Windows 11 mouse crossing and keyboard following
-2. Windows -> macOS
-3. macOS -> Windows
-4. clipboard text in both directions
-5. stop/start and reconnect without stale UI states
-6. 30-minute soak before beta, 12-hour soak before stable
+## 5. macOS 输入链路
 
-The old v0.x implementation is retained only as legacy history while v1 is validated.
+- CoreGraphics Event Tap 捕获键鼠输入；
+- Accessibility 权限用于远端输入注入；
+- Input Monitoring 权限用于全局输入捕获；
+- Secure Keyboard Entry 开启时，macOS 可能主动阻止合成键盘输入，程序会在诊断状态中提示。
+
+## 6. 配对与身份
+
+- 一次性人工确认码：`XXXX-XXXX-XXXX`
+- 持久化可信控制端信息
+- QUIC 传输证书固定并持久化
+- 设备发现阶段交换的传输公钥用于证书固定
+- 输入包必须通过当前集群和配对凭据校验
+
+本产品定位为可信局域网中的多机桌面控制工具，不面向公网直接暴露输入端口。
+
+## 7. 产品层与上游层隔离
+
+本仓库不直接复制维护一整份上游源码，而是在 CI 中：
+
+1. 拉取固定上游提交；
+2. 运行 `rebrand_upstream.py` 应用产品名称、配对与交互覆盖；
+3. 运行 `harden_native.py` 应用输入性能、键盘、Windows 安装器和兼容性加固；
+4. 追加 `product_overrides.css` 形成产品视觉系统；
+5. 执行前端构建、Rust 检查和 Tauri 打包。
+
+这样可以让产品差异保持可审计，同时避免修改上游时产生大面积不可追踪的分叉。
+
+## 8. 发布门槛
+
+CI 编译成功不等于稳定版。版本状态按以下标准推进：
+
+### Alpha → Beta
+
+- Windows 11 → Windows 11 鼠标跨屏稳定；
+- 键盘普通输入、组合键、长按无明显丢键；
+- 左右键、滚轮正常；
+- 30 分钟连续控制无输入中断；
+- 停止/启动、跨回本机、断线恢复后无卡键。
+
+### Beta → Stable
+
+- Windows ↔ macOS 双向通过；
+- 文本剪贴板双向通过；
+- 多显示器布局通过；
+- 12 小时长时间运行无持续性输入故障；
+- 安装、升级、卸载和系统重启路径完成回归。

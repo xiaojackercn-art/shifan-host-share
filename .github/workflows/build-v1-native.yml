@@ -87,12 +87,25 @@ jobs:
         run: |
           npm ci
           npm exec -- tauri icon "$env:GITHUB_WORKSPACE/assets/AI.png"
-      - name: Verify source
+      - name: Verify frontend
+        working-directory: native-upstream
+        shell: pwsh
+        run: npm run build
+      - name: Verify Rust source
         working-directory: native-upstream
         shell: pwsh
         run: |
-          npm run build
-          cargo check --manifest-path src-tauri/Cargo.toml
+          $ErrorActionPreference = "Continue"
+          $lines = cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | ForEach-Object { $_.ToString() }
+          $exit = $LASTEXITCODE
+          $lines | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) {
+            $tail = ($lines | Select-Object -Last 35) -join " | "
+            if ($tail.Length -gt 3500) { $tail = $tail.Substring($tail.Length - 3500) }
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host "::error title=Windows Rust compile failure::$tail"
+            exit $exit
+          }
       - name: Build Windows installer
         working-directory: native-upstream
         shell: pwsh

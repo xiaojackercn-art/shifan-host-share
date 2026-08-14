@@ -67,6 +67,56 @@ def patch_pair_code(lib_rs: Path) -> None:
     lib_rs.write_text(text[:start] + new_function + text[end + 2 :], encoding="utf-8")
 
 
+def patch_pairing_ui(app_tsx: Path, i18n_ts: Path) -> None:
+    """Make the frontend accept and auto-format the new XXXX-XXXX-XXXX code."""
+    text = app_tsx.read_text(encoding="utf-8")
+    old_handler = '''setServerPairingCode(
+                  event.target.value.replace(/\\D/g, "").slice(0, 6),
+                );'''
+    new_handler = '''const raw = event.target.value
+                  .toUpperCase()
+                  .replace(/[^A-HJ-NP-Z2-9]/g, "")
+                  .slice(0, 12);
+                setServerPairingCode(raw.replace(/(.{4})(?=.)/g, "$1-"));'''
+    if old_handler not in text:
+        raise RuntimeError("upstream pairing input handler changed; review before building")
+    text = text.replace(old_handler, new_handler, 1)
+
+    pairing_input_marker = '''              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder={ui.devices.pairingCodePlaceholder}'''
+    pairing_input_replacement = '''              inputMode="text"
+              autoCapitalize="characters"
+              spellCheck={false}
+              maxLength={14}
+              autoComplete="one-time-code"
+              placeholder={ui.devices.pairingCodePlaceholder}'''
+    if pairing_input_marker not in text:
+        raise RuntimeError("upstream pairing input attributes changed; review before building")
+    text = text.replace(pairing_input_marker, pairing_input_replacement, 1)
+
+    disabled_old = "disabled={isPairingDevice || serverPairingCode.length < 6}"
+    disabled_new = "disabled={isPairingDevice || serverPairingCode.length !== 14}"
+    if disabled_old not in text:
+        raise RuntimeError("upstream pairing submit validation changed; review before building")
+    text = text.replace(disabled_old, disabled_new, 1)
+    app_tsx.write_text(text, encoding="utf-8")
+
+    # Keep the visible help text aligned with the actual code format. The UI is
+    # bilingual, so patch both current Chinese and English upstream strings.
+    replace_text(
+        i18n_ts,
+        [
+            ("客户端屏幕上会显示 6 位验证码：", "客户端屏幕上会显示配对码（XXXX-XXXX-XXXX）："),
+            ("pairingCodePlaceholder: \"6 位验证码\"", "pairingCodePlaceholder: \"XXXX-XXXX-XXXX\""),
+            ("请输入客户端显示的 6 位验证码。", "请输入客户端显示的完整配对码（XXXX-XXXX-XXXX）。"),
+            ("The client shows a 6-digit pairing code:", "The client shows a pairing code (XXXX-XXXX-XXXX):"),
+            ("pairingCodePlaceholder: \"6-digit code\"", "pairingCodePlaceholder: \"XXXX-XXXX-XXXX\""),
+            ("Enter the 6-digit code shown on the client.", "Enter the full pairing code shown on the client (XXXX-XXXX-XXXX)."),
+        ],
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
@@ -125,20 +175,12 @@ def main() -> None:
     for relative in ["src/App.tsx", "src/i18n.ts", "index.html"]:
         replace_text(root / relative, [("MyKVM", PRODUCT_TITLE)])
 
-    replace_text(
-        root / "src-tauri" / "src" / "lib.rs",
-        [(UPSTREAM_REPO, repo_url)],
-    )
-    replace_text(
-        root / "src-tauri" / "nsis-hooks.nsh",
-        [("MyKVM", "ShifanAI Host Share")],
-    )
-    replace_text(
-        root / "src" / "constants.ts",
-        [(UPSTREAM_REPO, repo_url)],
-    )
+    replace_text(root / "src-tauri" / "src" / "lib.rs", [(UPSTREAM_REPO, repo_url)])
+    replace_text(root / "src-tauri" / "nsis-hooks.nsh", [("MyKVM", "ShifanAI Host Share")])
+    replace_text(root / "src" / "constants.ts", [(UPSTREAM_REPO, repo_url)])
 
     patch_pair_code(root / "src-tauri" / "src" / "lib.rs")
+    patch_pairing_ui(root / "src" / "App.tsx", root / "src" / "i18n.ts")
     replace_text(
         root / "src-tauri" / "src" / "lib.rs",
         [("const PAIRING_CODE_TTL_MS: u64 = 60_000;", "const PAIRING_CODE_TTL_MS: u64 = 180_000;")],

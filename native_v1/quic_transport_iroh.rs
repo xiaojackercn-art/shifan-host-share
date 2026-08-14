@@ -298,8 +298,6 @@ async fn run_transport(
         }
     };
 
-    // Allow a short window for relay registration/address publication. Failure
-    // here does not prevent LAN/direct use; later reconnects keep retrying.
     if tokio::time::timeout(ONLINE_WAIT, endpoint.online()).await.is_err() {
         log::warn!("WAN relay registration did not complete within {}s", ONLINE_WAIT.as_secs());
     }
@@ -431,13 +429,7 @@ fn register_connection(
     on_datagram: DatagramHandler,
     on_stream: StreamHandler,
 ) {
-    let endpoint_id = match connection.remote_id() {
-        Ok(id) => id,
-        Err(error) => {
-            log::warn!("WAN connection missing remote endpoint id: {error}");
-            return;
-        }
-    };
+    let endpoint_id = connection.remote_id();
     let key = endpoint_id.to_z32();
     if let Ok(mut map) = connections.lock() {
         map.insert(key, connection.clone());

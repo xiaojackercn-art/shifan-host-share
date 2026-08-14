@@ -37,10 +37,16 @@ def main() -> None:
     types_path.write_text(types, encoding="utf-8")
 
     # Iroh gives this product globally dialable EndpointIds, NAT traversal and relay fallback.
+    # Disable Iroh's optional default portmapper feature on desktop builds. The portmapper
+    # dependency currently pulls a Windows WMI dependency whose broad windows/windows-core
+    # version ranges can resolve to incompatible 0.61/0.62 pairs. Iroh's QUIC, hole punching,
+    # discovery and relay fallback do not require that optional UPnP/NAT-PMP port mapping
+    # feature. Keep the ring TLS backend explicitly enabled.
     cargo_path = root / "src-tauri" / "Cargo.toml"
     cargo = cargo_path.read_text(encoding="utf-8")
-    if 'iroh = "1.0.3"' not in cargo:
-        cargo = replace_once(cargo, 'quinn = "0.11"', 'quinn = "0.11"\niroh = "1.0.3"', "Cargo iroh dependency")
+    iroh_dep = 'iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"] }'
+    if iroh_dep not in cargo:
+        cargo = replace_once(cargo, 'quinn = "0.11"', f'quinn = "0.11"\n{iroh_dep}', "Cargo iroh dependency")
     cargo_path.write_text(cargo, encoding="utf-8")
 
     # Explicitly use the generated product icon for the application bundle and NSIS installer.

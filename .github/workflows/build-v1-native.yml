@@ -53,7 +53,7 @@ jobs:
           - 鼠标边缘跨屏、键盘跟随、滚轮、文本/图片剪贴板
           - 配对挑战码改为 XXXX-XXXX-XXXX，配对关系持久保存
           - Windows 使用 Tauri/NSIS 安装包；macOS 输出 Apple Silicon / Intel DMG
-          - 图标继续使用用户指定的 AI.png，并生成圆角透明多尺寸图标
+          - 图标继续使用用户指定的 AI 图标风格，并生成圆角透明多尺寸图标
 
           **这是原生核心验证版，不宣称已经完成两台真实电脑的最终验收。** CI 负责源码、核心检查和安装包构建；Win→Win、Win↔Mac 的真实跨屏仍需要两台实体设备验证后才进入 beta/stable。
           EOF
@@ -76,11 +76,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare exact rounded product icon
+      - name: Prepare rounded product icon
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check pillow
           python scripts/prepare_icon.py
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path assets/AI.png)) {
+            Write-Host "Hosted icon is unavailable; using repository fallback captured from the approved product icon."
+            New-Item -ItemType Directory -Force assets | Out-Null
+            $raw = (Get-Content native_v1/icon_fallback.b64 -Raw).Trim()
+            [IO.File]::WriteAllBytes("assets/icon-source.png", [Convert]::FromBase64String($raw))
+            python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
+          }
           if (!(Test-Path assets/AI.png)) { throw "assets/AI.png was not generated" }
       - name: Pin native upstream and apply product patch
         env:
@@ -154,12 +161,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare exact rounded product icon
+      - name: Prepare rounded product icon
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pillow
-          python scripts/prepare_icon.py
+          if ! python scripts/prepare_icon.py || [ ! -f assets/AI.png ]; then
+            echo "Hosted icon is unavailable; using repository fallback captured from the approved product icon."
+            mkdir -p assets
+            python - <<'PY'
+          import base64
+          from pathlib import Path
+          Path('assets/icon-source.png').write_bytes(base64.b64decode(Path('native_v1/icon_fallback.b64').read_text().strip()))
+          PY
+            python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
+          fi
           test -f assets/AI.png
       - name: Pin native upstream and apply product patch
         env:

@@ -17,8 +17,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
-    QSpacerItem,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -30,7 +28,8 @@ APP_NAME = "视饭AI:主机共享"
 
 
 class UiSignals(QObject):
-    action_finished = Signal(dict)
+    action_finished = Signal(int, dict)
+    stop_finished = Signal(int, dict)
 
 
 def _asset_path(name: str) -> Path | None:
@@ -57,9 +56,15 @@ class MainWindow(QMainWindow):
         self.api = api
         self.signals = UiSignals()
         self.signals.action_finished.connect(self._on_action_finished)
+        self.signals.stop_finished.connect(self._on_stop_finished)
         self.direction = "right"
-        self._busy = False
         self.role_mode = "host"
+        self._busy = False
+        self._stopping = False
+        self._action_seq = 0
+        self._active_action_id = 0
+        self._active_cancel: threading.Event | None = None
+        self._cancel_button_text = "停止共享"
 
         self.setWindowTitle(APP_NAME)
         self.resize(1120, 760)
@@ -73,7 +78,7 @@ class MainWindow(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_status)
-        self.timer.start(600)
+        self.timer.start(500)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -254,7 +259,7 @@ class MainWindow(QMainWindow):
         desc.setWordWrap(True)
         l.addWidget(title)
         l.addWidget(desc)
-        self.host_summary = QLabel("Deskflow 将直接监听 TCP 24800，不再使用 35999 配对端口。")
+        self.host_summary = QLabel("视饭AI负责监听 TCP 24800，并把真实 Deskflow 数据转发到本机后端。")
         self.host_summary.setObjectName("hintPanel")
         self.host_summary.setWordWrap(True)
         l.addWidget(self.host_summary)
@@ -271,7 +276,7 @@ class MainWindow(QMainWindow):
         l.setContentsMargins(0, 8, 0, 0)
         l.addWidget(self._field_label("主控电脑 IP"))
         self.peer_ip = QLineEdit()
-        self.peer_ip.setPlaceholderText("例如 192.168.1.6")
+        self.peer_ip.setPlaceholderText("例如 192.168.1.4")
         self.peer_ip.setObjectName("input")
         l.addWidget(self.peer_ip)
         l.addWidget(self._field_label("主控电脑配对码"))
@@ -296,8 +301,9 @@ class MainWindow(QMainWindow):
             if key == "right":
                 b.setChecked(True)
         l.addLayout(dirs)
-        note = QLabel("只需要这 3 项。软件会直接使用 Deskflow 官方连接端口 24800。")
+        note = QLabel("连接时会先验证 TCP 24800，再完成 Deskflow 协议握手；没有握手成功不会显示“已连接”。")
         note.setObjectName("muted")
+        note.setWordWrap(True)
         l.addWidget(note)
         self.connect_btn = QPushButton("连接主控电脑   →")
         self.connect_btn.setObjectName("primaryButton")
@@ -311,13 +317,17 @@ class MainWindow(QMainWindow):
         lab.setObjectName("fieldLabel")
         return lab
 
-    def _set_role(self, role: str):
+    def _set_role(self, role: str, force: bool = False):
+        if not force and (self._busy or self._stopping):
+            return
         self.role_mode = role
         self.host_tab.setChecked(role == "host")
         self.client_tab.setChecked(role == "client")
         self.role_stack.setCurrentIndex(0 if role == "host" else 1)
 
     def _select_direction(self, direction: str):
+        if self._busy or self._stopping:
+            return
         self.direction = direction
         for b in self.dir_group.buttons():
             text = b.text()
@@ -339,25 +349,52 @@ class MainWindow(QMainWindow):
         self._select_direction(peer.get("direction", "right"))
         eng = state.get("engine") or {}
         self.engine_text.setText(f"Deskflow Core {eng.get('version', '')} · {'已就绪' if eng.get('available') else '核心缺失'}")
-        self._set_role("host")
+        self._set_role("host", force=True)
+        self._set_controls_locked(False)
 
-    def _run_async(self, func):
-        if self._busy:
+    def _set_controls_locked(self, locked: bool):
+        enabled = not locked
+        self.host_tab.setEnabled(enabled)
+        self.client_tab.setEnabled(enabled)
+        self.host_btn.setEnabled(enabled)
+        self.connect_btn.setEnabled(enabled)
+        self.peer_ip.setEnabled(enabled)
+        self.peer_code.setEnabled(enabled)
+        self.regen_btn.setEnabled(enabled)
+        for b in self.dir_group.buttons():
+            b.setEnabled(enabled)
+
+    def _reset_action_buttons(self):
+        self.host_btn.setText("启动主控模式   →")
+        self.connect_btn.setText("连接主控电脑   →")
+
+    def _run_async(self, func, cancel_button_text: str):
+        if self._busy or self._stopping:
             return
+        self._action_seq += 1
+        action_id = self._action_seq
+        cancel_event = threading.Event()
+        self._active_action_id = action_id
+        self._active_cancel = cancel_event
         self._busy = True
-        self.host_btn.setEnabled(False)
-        self.connect_btn.setEnabled(False)
+        self._cancel_button_text = cancel_button_text
+        self._set_controls_locked(True)
+        self.stop_btn.setText(cancel_button_text)
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.setVisible(True)
+
         def work():
             try:
-                result = func()
+                result = func(cancel_event)
             except Exception as exc:
                 result = {"ok": False, "error": str(exc)}
-            self.signals.action_finished.emit(result)
-        threading.Thread(target=work, daemon=True).start()
+            self.signals.action_finished.emit(action_id, result)
+
+        threading.Thread(target=work, name=f"shifan-ui-action-{action_id}", daemon=True).start()
 
     def _start_host(self):
-        self.host_btn.setText("正在启动 Deskflow…")
-        self._run_async(self.api.prepare_host)
+        self.host_btn.setText("正在启动主控模式…")
+        self._run_async(lambda cancel: self.api.prepare_host(cancel), "取消启动")
 
     def _connect(self):
         host = self.peer_ip.text().strip()
@@ -366,28 +403,87 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "信息未填完整", "请输入主控电脑 IP 和配对码。")
             return
         self.connect_btn.setText("正在连接主控电脑…")
-        self._run_async(lambda: self.api.connect({"host": host, "pair_code": code, "direction": self.direction}))
+        payload = {"host": host, "pair_code": code, "direction": self.direction}
+        self._run_async(lambda cancel: self.api.connect(payload, cancel), "取消连接")
 
-    def _on_action_finished(self, result: dict):
+    def _on_action_finished(self, action_id: int, result: dict):
+        # A Stop/Cancel click invalidates the current action ID immediately.  A
+        # stale worker is therefore not allowed to put the UI back into
+        # “正在连接” or display an error dialog after the user already stopped.
+        if action_id != self._active_action_id:
+            return
         self._busy = False
-        self.host_btn.setEnabled(True)
-        self.connect_btn.setEnabled(True)
-        self.host_btn.setText("启动主控模式   →")
-        self.connect_btn.setText("连接主控电脑   →")
+        self._active_cancel = None
+        self._reset_action_buttons()
+        if result.get("cancelled"):
+            self.stop_btn.setVisible(False)
+            self._set_controls_locked(False)
+            return
         if not result.get("ok"):
+            self.stop_btn.setVisible(False)
+            self._set_controls_locked(False)
             QMessageBox.critical(self, "操作失败", str(result.get("error", "未知错误")))
-        else:
-            self.stop_btn.setVisible(True)
+            return
+        self.stop_btn.setText("停止共享")
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.setVisible(True)
+        self._set_controls_locked(True)
 
     def _regenerate(self):
+        if self._busy or self._stopping:
+            return
         if QMessageBox.question(self, "重新生成配对码", "旧配对码会立即失效，是否继续？") == QMessageBox.Yes:
             result = self.api.regenerate_code()
             if result.get("ok"):
                 self.pair_code.setText(result["pair_code"])
+            else:
+                QMessageBox.critical(self, "操作失败", str(result.get("error", "未知错误")))
 
     def _stop(self):
-        self.api.disconnect()
+        if self._stopping:
+            return
+        if self._active_cancel is not None:
+            self._active_cancel.set()
+
+        # Invalidate the in-flight worker before doing any cleanup.  This fixes
+        # the v0.8 race where the user clicked “停止共享”, but the old connect
+        # thread later finished and changed the button back to “正在连接…”.
+        self._action_seq += 1
+        stop_id = self._action_seq
+        self._active_action_id = stop_id
+        self._active_cancel = None
+        self._busy = False
+        self._stopping = True
+        self._reset_action_buttons()
+        self._set_controls_locked(True)
+        self.stop_btn.setText("正在停止…")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setVisible(True)
+        self.top_status.setText("● 正在停止")
+        self.status_text.setText("正在停止共享…")
+        self.status_detail.setText("正在取消连接并关闭 Deskflow / TCP 24800")
+
+        def work():
+            try:
+                result = self.api.disconnect()
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            self.signals.stop_finished.emit(stop_id, result)
+
+        threading.Thread(target=work, name="shifan-ui-stop", daemon=True).start()
+
+    def _on_stop_finished(self, stop_id: int, result: dict):
+        if stop_id != self._active_action_id:
+            return
+        self._stopping = False
         self.stop_btn.setVisible(False)
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.setText("停止共享")
+        self._reset_action_buttons()
+        self._set_controls_locked(False)
+        if not result.get("ok"):
+            QMessageBox.critical(self, "停止失败", str(result.get("error", "未知错误")))
+        self._poll_status()
 
     def _poll_status(self):
         try:
@@ -397,21 +493,40 @@ class MainWindow(QMainWindow):
         self.status_text.setText(s.get("text", "准备就绪"))
         self.status_detail.setText(s.get("detail", ""))
         kind = s.get("kind")
+        role = s.get("role", "idle")
+
+        if self._stopping or kind == "stopping":
+            self.top_status.setText("● 正在停止")
+            return
+
         if kind == "connected":
             self.top_status.setText("● 已连接")
-            self.stop_btn.setVisible(True)
         elif kind == "remote":
             self.top_status.setText("● 已连接主控")
-            self.stop_btn.setVisible(True)
         elif kind == "host_waiting":
             self.top_status.setText("● 主控等待中")
-            self.stop_btn.setVisible(True)
         elif kind == "connecting":
             self.top_status.setText("● 正在连接")
         elif kind == "error":
             self.top_status.setText("● 需要处理")
         else:
             self.top_status.setText("● 准备就绪")
+
+        active_share = role in {"host", "client"} and kind in {"host_waiting", "connected", "remote", "connecting"}
+        if self._busy:
+            self._set_controls_locked(True)
+            self.stop_btn.setVisible(True)
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.setText(self._cancel_button_text)
+        elif active_share:
+            self._set_controls_locked(True)
+            self.stop_btn.setVisible(True)
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.setText("停止共享")
+        else:
+            self._set_controls_locked(False)
+            self.stop_btn.setVisible(False)
+            self._reset_action_buttons()
 
     def _apply_style(self):
         self.setFont(QFont("Microsoft YaHei UI" if platform.system() == "Windows" else ".AppleSystemUIFont", 10))
@@ -446,6 +561,7 @@ class MainWindow(QMainWindow):
         QPushButton#primaryButton:hover { background:#3486f4; }
         QPushButton#primaryButton:disabled { background:#24466d; color:#7d95af; }
         QPushButton#dangerButton { min-height:38px; background:#29171f; color:#ff9eaa; border:1px solid #68404c; border-radius:10px; }
+        QPushButton#dangerButton:disabled { color:#9d6770; border-color:#473039; }
         QFrame#statusCard { background:#0b192b; border:1px solid #173956; border-radius:15px; }
         QLabel#statusDot { color:#4f9cff; font-size:20px; }
         QLabel#statusText { font-size:13px; font-weight:700; }
@@ -455,6 +571,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         try:
+            if self._active_cancel is not None:
+                self._active_cancel.set()
             self.timer.stop()
             self.api.close()
         finally:

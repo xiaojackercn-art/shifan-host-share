@@ -1,40 +1,74 @@
 # 视饭AI:主机共享
 
-一个 Windows / macOS 跨电脑键鼠共享工具。两台电脑分别连接自己的显示器，主控电脑保留鼠标键盘；鼠标移动到主控屏幕边缘后进入第二台电脑，键盘自动跟随。
+面向 Windows / macOS 的软件 KVM：一套键盘鼠标控制多台电脑，支持鼠标跨屏、键盘跟随、滚轮和文本剪贴板同步。
 
-## v0.9.0
+> 当前开发线已经彻底停止 v0.x 的 Python + Deskflow + TCP 24800 方案。新版使用 Rust/Tauri 原生核心、UDP 局域网发现和 QUIC/TLS 通道。
 
-实际键鼠共享引擎使用 **Deskflow 1.26.0**。视饭AI负责桌面 UI、设备配对码、局域网网卡识别、屏幕方向配置、Windows 防火墙自检/修复、TCP 转发、连接状态判断以及一键启动/停止。
+## 普通用户怎么用
 
-v0.9 重点修复两类实机问题：
+只需要记住两个角色：
 
-- 只有 Deskflow 完成真实协议握手后才显示“已连接”。普通 TCP 探测或 `accepted client connection` 不再被误判成第二台电脑已经连接。
-- Windows TCP 24800 防火墙规则不再限制为 `LocalSubnet`，避免多网卡、Public 网络配置或 Windows 路由状态导致同网段电脑仍然超时。安装版自动创建规则；便携版缺失时会在需要时请求一次 UAC 自动修复。
-- “连接主控电脑”和“启动主控模式”都可取消。点击“取消连接 / 停止共享”后 UI 立即复位，后台旧任务不会再把按钮改回“正在连接”。
+- **主控电脑**：键盘和鼠标实际插在这台电脑上。
+- **被控电脑**：另一台电脑，不需要再准备一套键盘鼠标。
 
-### 使用方式
+首次启动时两台电脑分别选择自己的角色。之后：
 
-1. 两台电脑都安装并打开“视饭AI:主机共享”。
-2. 鼠标键盘所在电脑选择 **“鼠标键盘在这台 / 主控电脑”**，点击 **“启动主控模式”**。
-3. 主控电脑界面会显示它自己的 **推荐局域网 IP + 本机安全配对码**。
-4. 第二台电脑选择 **“另一块屏幕 / 第二台电脑”**，输入主控电脑显示的 IP 和配对码，并选择第二台屏幕位于主控电脑的左 / 右 / 上 / 下。
-5. 点击 **“连接主控电脑”**。只有 TCP 24800 可达并完成 Deskflow 协议握手后，状态才会变成“已连接”。
-6. 鼠标推向所选屏幕边缘即可跨屏，键盘跟随鼠标。
+1. 被控电脑保持软件打开；
+2. 主控电脑进入 **连接电脑**；
+3. 点击 **自动查找另一台电脑**；
+4. 找到后点 **连接这台电脑**；
+5. 被控电脑出现 `XXXX-XXXX-XXXX` 配对码，输入到主控电脑；
+6. 在 **屏幕位置** 中把第二台屏幕拖到真实的左 / 右 / 上 / 下；
+7. 鼠标推到屏幕边缘即可跨过去，键盘自动跟随。
 
-## Windows
+正常使用 **不需要输入 IP、不需要填写端口、不需要配置 TCP 24800**。
 
-Release 主下载为 `ShifanAI-HostShare-Setup-x64.exe`。安装器会创建开始菜单/桌面快捷方式，并创建 TCP 24800 的 IN / OUT 防火墙规则。旧版本的 LocalSubnet 和旧程序路径规则会在升级时清理。
+## 当前架构
 
-## macOS
+- UI / 桌面壳：Tauri + React
+- 核心：Rust
+- 局域网发现：UDP
+- 键鼠与剪贴板：QUIC + TLS
+- Windows：原生键鼠 Hook / SendInput 路径
+- macOS：CoreGraphics / Accessibility 路径
+- 配对：一次性 `XXXX-XXXX-XXXX` 挑战码 + 持久化可信控制端
 
-Release 分 Apple Silicon 和 Intel 两个 DMG。首次使用 macOS 会要求“辅助功能 / 输入监控”权限，这是系统对键盘鼠标控制软件的强制安全机制。
+原生核心基于 MIT 许可的 MyKVM 架构并锁定到固定上游提交，再通过 `native_v1/rebrand_upstream.py` 应用视饭AI产品层。第三方许可见 `native_v1/THIRD_PARTY_NOTICES.md`。
 
-## 网络
+## 仓库结构
 
-默认 Deskflow 对外端口为 **24800/TCP**。主控端由视饭AI进程监听 `0.0.0.0:24800`，再把 Deskflow 原始流量转发到本机 `127.0.0.1:24810` 后端。
+```text
+.github/workflows/build-v1-native.yml   Windows / macOS 构建与 Release
+native_v1/VERSION                       当前原生版本
+native_v1/rebrand_upstream.py           产品名称、配对、交互流程覆盖
+native_v1/product_overrides.css         视饭AI界面样式
+native_v1/icon_fallback.b64             指定产品图标的内置离线源
+native_v1/materialize_icon_fallback.py  构建时生成产品 PNG
+native_v1/REAL_DEVICE_TEST.md            两台实体电脑验收标准
+native_v1/ARCHITECTURE.md                原生架构说明
+```
 
-当前版本主要面向能够直接互相路由的可信网络，最常见就是同一家庭/公司局域网。`192.168.x.x`、`10.x.x.x` 等私网地址不能直接跨互联网使用；如果两台电脑处在完全不同的网络，需要额外的 VPN / 组网 / 中继能力。
+旧的 v0.9 代码已经完整保存在分支 `legacy-v0.9`，不会与新版主线混在一起。
 
-## 第三方核心
+## 发布包
 
-Deskflow 1.26.0，GPL-2.0 with OpenSSL exception。详见 `THIRD_PARTY_NOTICES.md` 和上游项目。
+Release 会生成：
+
+- `ShifanAI-HostShare-Windows-x64-Setup.exe`
+- `ShifanAI-HostShare-macOS-AppleSilicon.dmg`
+- `ShifanAI-HostShare-macOS-Intel.dmg`
+
+macOS 首次使用必须授予辅助功能 / 输入监控权限；这是系统对键鼠控制软件的安全要求。
+
+## 版本门槛
+
+当前 alpha 只在下面条件全部通过后才升级 beta：
+
+- Windows -> Windows 能自动发现和配对；
+- 鼠标真实跨屏；
+- 键盘跟随；
+- 滚轮有效；
+- 文本剪贴板至少双向成功一次；
+- 停止 / 再启动不会出现假连接或按钮卡死。
+
+详细步骤见 `native_v1/REAL_DEVICE_TEST.md`。

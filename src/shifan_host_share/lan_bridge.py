@@ -3,6 +3,7 @@ from __future__ import annotations
 import select
 import socket
 import threading
+import time
 from dataclasses import dataclass
 
 
@@ -14,12 +15,7 @@ class ProbeResult:
 
 
 def probe_tcp(host: str, port: int, timeout: float = 2.0) -> ProbeResult:
-    """Open a real TCP connection and close it immediately.
-
-    This deliberately tests the same route that Deskflow will use.  It is used
-    both for host readiness and for client preflight so the UI never reports
-    "host ready" merely because a process happens to still be alive.
-    """
+    """Open a real TCP connection and close it immediately."""
     try:
         with socket.create_connection((host, int(port)), timeout=timeout):
             return ProbeResult(True)
@@ -27,13 +23,50 @@ def probe_tcp(host: str, port: int, timeout: float = 2.0) -> ProbeResult:
         return ProbeResult(False, str(exc), getattr(exc, "winerror", None) or getattr(exc, "errno", None))
 
 
+def probe_tcp_until(
+    host: str,
+    port: int,
+    *,
+    total_timeout: float = 2.5,
+    attempt_timeout: float = 0.35,
+    cancel_event: threading.Event | None = None,
+) -> ProbeResult:
+    """Retry a TCP probe while remaining immediately cancellable.
+
+    A single Windows TCP connect can otherwise keep the UI looking stuck for
+    the whole socket timeout.  Short attempts plus a cancellation event keep
+    the Stop/Cancel button responsive while still allowing a slow LAN adapter
+    a few seconds to come up.
+    """
+    deadline = time.monotonic() + max(0.05, float(total_timeout))
+    last = ProbeResult(False, "连接超时")
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return ProbeResult(False, "操作已取消")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return last
+        last = probe_tcp(host, port, timeout=min(max(0.05, attempt_timeout), remaining))
+        if last.ok:
+            return last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return last
+        sleep_for = min(0.12, remaining)
+        if cancel_event is not None:
+            if cancel_event.wait(sleep_for):
+                return ProbeResult(False, "操作已取消")
+        else:
+            time.sleep(sleep_for)
+
+
 class TcpForwarder:
     """Small full-duplex TCP bridge owned by the ShifanAI app.
 
     Deskflow itself is kept on a loopback-only backend port.  The app owns the
-    LAN-facing listener, which gives us deterministic binding, deterministic
-    firewall rules and a listener that can be verified before the UI says the
-    host is ready.
+    LAN-facing listener, which gives us deterministic binding and makes it
+    possible to validate the transport independently of Deskflow's adapter
+    selection.
     """
 
     def __init__(

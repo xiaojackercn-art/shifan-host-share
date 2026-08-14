@@ -23,22 +23,14 @@ def patch_transport(root: Path) -> None:
         "Iroh imports",
     )
 
-    text = replace_once(
-        text,
-        '''#[derive(Clone, Debug)]
+    marker = '''#[derive(Clone, Debug)]
 pub struct PeerEndpoint {
     pub addr: String,
     pub public_key: String,
     pub protocol_version: u16,
 }
-''',
-        '''#[derive(Clone, Debug)]
-pub struct PeerEndpoint {
-    pub addr: String,
-    pub public_key: String,
-    pub protocol_version: u16,
-}
-
+'''
+    replacement = marker + '''
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WanConnectionInfo {
@@ -47,9 +39,8 @@ pub struct WanConnectionInfo {
     pub direct_addresses: Vec<String>,
     pub ready: bool,
 }
-''',
-        "WAN connection info model",
-    )
+'''
+    text = replace_once(text, marker, replacement, "WAN connection info model")
 
     text = replace_once(
         text,
@@ -68,7 +59,7 @@ pub struct WanConnectionInfo {
     peer_health: HealthMap,
     latest_datagrams: LatestDatagramMap,
 }''',
-        "TransportHandle connection info",
+        "TransportHandle WAN connection info",
     )
 
     text = replace_once(
@@ -90,23 +81,16 @@ pub struct WanConnectionInfo {
     }
 
     pub fn peer(&self, addr: String, public_key: String, protocol_version: u16) -> PeerEndpoint {''',
-        "connection_info getter",
+        "TransportHandle WAN connection info getter",
     )
 
-    text = replace_once(
-        text,
-        '''pub fn validate_endpoint_id(value: &str) -> Result<(), String> {
+    marker = '''pub fn validate_endpoint_id(value: &str) -> Result<(), String> {
     EndpointId::from_z32(value.trim())
         .map(|_| ())
         .map_err(|error| format!("invalid WAN endpoint id: {error}"))
 }
-''',
-        '''pub fn validate_endpoint_id(value: &str) -> Result<(), String> {
-    EndpointId::from_z32(value.trim())
-        .map(|_| ())
-        .map_err(|error| format!("invalid WAN endpoint id: {error}"))
-}
-
+'''
+    replacement = marker + '''
 pub fn format_wan_peer_addr(
     endpoint_id: &str,
     relay_urls: &[String],
@@ -159,9 +143,8 @@ fn endpoint_addr_for_peer(peer: &PeerEndpoint) -> Result<EndpointAddr, String> {
 
     Ok(endpoint_addr)
 }
-''',
-        "explicit EndpointAddr parser",
-    )
+'''
+    text = replace_once(text, marker, replacement, "explicit WAN EndpointAddr ticket")
 
     text = replace_once(
         text,
@@ -175,7 +158,7 @@ fn endpoint_addr_for_peer(peer: &PeerEndpoint) -> Result<EndpointAddr, String> {
     let loop_health = Arc::clone(&peer_health);
     let loop_latest = Arc::clone(&latest_datagrams);
     let loop_connection_info = Arc::clone(&connection_info);''',
-        "transport shared WAN info",
+        "shared WAN address state",
     )
 
     text = replace_once(
@@ -187,7 +170,7 @@ fn endpoint_addr_for_peer(peer: &PeerEndpoint) -> Result<EndpointAddr, String> {
                 loop_latest,
                 loop_connection_info,
                 ready_tx,''',
-        "run_transport WAN info argument",
+        "run transport WAN address state",
     )
 
     text = replace_once(
@@ -201,7 +184,7 @@ fn endpoint_addr_for_peer(peer: &PeerEndpoint) -> Result<EndpointAddr, String> {
         connection_info,
         peer_health,
         latest_datagrams,''',
-        "TransportHandle WAN info init",
+        "transport handle WAN state",
     )
 
     text = replace_once(
@@ -213,7 +196,7 @@ fn endpoint_addr_for_peer(peer: &PeerEndpoint) -> Result<EndpointAddr, String> {
     latest_datagrams: LatestDatagramMap,
     connection_info: Arc<Mutex<WanConnectionInfo>>,
     ready_tx: mpsc::Sender<Result<ReadyTransport, String>>,''',
-        "run_transport signature WAN info",
+        "run transport connection info parameter",
     )
 
     text = replace_once(
@@ -248,14 +231,12 @@ fn endpoint_addr_for_peer(peer: &PeerEndpoint) -> Result<EndpointAddr, String> {
             _ = address_refresh.tick() => {
                 refresh_connection_info(&endpoint, &connection_info);
             }''',
-        "continuous WAN address refresh",
+        "continuously refresh WAN address snapshot",
     )
 
-    text = replace_once(
-        text,
-        '''async fn send_datagram_now(
-    endpoint: &Endpoint,''',
-        '''fn current_connection_info(endpoint: &Endpoint) -> WanConnectionInfo {
+    marker = '''async fn send_datagram_now(
+    endpoint: &Endpoint,'''
+    replacement = '''fn current_connection_info(endpoint: &Endpoint) -> WanConnectionInfo {
     let addr = endpoint.addr();
     let mut relay_urls = addr
         .relay_urls()
@@ -285,90 +266,80 @@ fn refresh_connection_info(endpoint: &Endpoint, shared: &Arc<Mutex<WanConnection
 }
 
 async fn send_datagram_now(
-    endpoint: &Endpoint,''',
-        "WAN connection info helpers",
-    )
+    endpoint: &Endpoint,'''
+    text = replace_once(text, marker, replacement, "WAN address snapshot helpers")
 
-    text = replace_once(
-        text,
-        '''    let endpoint_id = EndpointId::from_z32(peer.public_key.trim())
+    old_ensure = '''async fn ensure_connection(
+    endpoint: &Endpoint,
+    connections: &ConnectionMap,
+    peer: &PeerEndpoint,
+) -> Result<iroh::endpoint::Connection, String> {
+    let endpoint_id = EndpointId::from_z32(peer.public_key.trim())
         .map_err(|error| format!("invalid WAN endpoint id: {error}"))?;
-    let key = endpoint_id.to_z32();''',
-        '''    let endpoint_addr = endpoint_addr_for_peer(peer)?;
-    let key = endpoint_addr.id.to_z32();''',
-        "ensure_connection EndpointAddr",
-    )
+    let key = endpoint_id.to_z32();
+    if let Some(connection) = connections
+        .lock()
+        .ok()
+        .and_then(|connections| connections.get(&key).cloned())
+        .filter(|connection| connection.close_reason().is_none())
+    {
+        return Ok(connection);
+    }
 
-    text = replace_once(
-        text,
-        '''    let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_id, ALPN))
+    let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_id, ALPN))
         .await
         .map_err(|_| format!("WAN connect to {key} timed out"))?
-        .map_err(|error| format!("WAN connect to {key} failed: {error}"))?;''',
-        '''    let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, ALPN))
+        .map_err(|error| format!("WAN connect to {key} failed: {error}"))?;
+
+    if let Ok(mut map) = connections.lock() {
+        map.insert(key.clone(), connection.clone());
+    }
+    Ok(connection)
+}
+'''
+    new_ensure = '''async fn ensure_connection(
+    endpoint: &Endpoint,
+    connections: &ConnectionMap,
+    peer: &PeerEndpoint,
+) -> Result<iroh::endpoint::Connection, String> {
+    let endpoint_addr = endpoint_addr_for_peer(peer)?;
+    let key = endpoint_addr.id.to_z32();
+    if let Some(connection) = connections
+        .lock()
+        .ok()
+        .and_then(|connections| connections.get(&key).cloned())
+        .filter(|connection| connection.close_reason().is_none())
+    {
+        return Ok(connection);
+    }
+
+    let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, ALPN))
         .await
-        .map_err(|_| format!("连接目标电脑超时，请确认对方软件保持运行并重新生成连接密钥。"))?
+        .map_err(|_| format!("连接被控电脑 {key} 超时，请检查两台电脑的网络后重试。"))?
         .map_err(|error| {
             let detail = error.to_string();
             if detail.contains("No addressing information available") {
-                "目标电脑没有可用的公网地址信息。请在被控电脑保持软件运行，等待显示“连接服务正常”后点击“重新生成连接密钥”，再用新密钥连接。".to_string()
+                "无法找到被控电脑的公网地址。请在被控电脑等待“公网连接已就绪”后，重新生成连接密钥再连接。".to_string()
             } else {
-                format!("WAN connect to {key} failed: {detail}")
+                format!("连接被控电脑 {key} 失败：{detail}")
             }
-        })?;''',
-        "connect using explicit EndpointAddr",
-    )
+        })?;
+
+    if let Ok(mut map) = connections.lock() {
+        map.insert(key.clone(), connection.clone());
+    }
+    Ok(connection)
+}
+'''
+    text = replace_once(text, old_ensure, new_ensure, "explicit WAN EndpointAddr dialing")
 
     path.write_text(text, encoding="utf-8")
-
-
-def patch_device_schema(root: Path) -> None:
-    rust_path = root / "src-tauri" / "src" / "lib.rs"
-    rust = rust_path.read_text(encoding="utf-8")
-    rust = replace_once(
-        rust,
-        '''    #[serde(default)]
-    transport_public_key: String,
-    #[serde(default = "default_protocol_version")]''',
-        '''    #[serde(default)]
-    transport_public_key: String,
-    #[serde(default)]
-    wan_cluster_id: String,
-    #[serde(default)]
-    wan_pair_secret: String,
-    #[serde(default)]
-    wan_relay_urls: Vec<String>,
-    #[serde(default)]
-    wan_direct_addresses: Vec<String>,
-    #[serde(default = "default_protocol_version")]''',
-        "Rust Device WAN persistence fields",
-    )
-    rust_path.write_text(rust, encoding="utf-8")
-
-    types_path = root / "src" / "types.ts"
-    types = types_path.read_text(encoding="utf-8")
-    types = replace_once(
-        types,
-        '''  transportPublicKey: string
-  protocolVersion: number''',
-        '''  transportPublicKey: string
-  wanClusterId?: string
-  wanPairSecret?: string
-  wanRelayUrls?: string[]
-  wanDirectAddresses?: string[]
-  protocolVersion: number''',
-        "TypeScript Device WAN persistence fields",
-    )
-    types_path.write_text(types, encoding="utf-8")
 
 
 def patch_input_targets(root: Path) -> None:
     path = root / "src-tauri" / "src" / "input.rs"
     text = path.read_text(encoding="utf-8")
-
-    text = replace_once(
-        text,
-        '''fn wan_target_credentials(device: &Device) -> Option<(String, String, String)> {
+    old = '''fn wan_target_credentials(device: &Device) -> Option<(String, String, String)> {
     if device.source != "wan-key" {
         return None;
     }
@@ -382,29 +353,18 @@ def patch_input_targets(root: Path) -> None:
     }
     Some((endpoint_id.to_string(), cluster_id.to_string(), pair_secret.to_string()))
 }
-''',
-        '''fn wan_target_credentials(device: &Device) -> Option<(String, String, String)> {
+'''
+    new = '''fn wan_target_credentials(device: &Device) -> Option<(String, String, String)> {
     if device.source != "wan-key" {
         return None;
     }
-    let endpoint_id = device.transport_public_key.trim();
-    if !endpoint_id.is_empty()
-        && !device.wan_cluster_id.trim().is_empty()
-        && !device.wan_pair_secret.trim().is_empty()
-    {
-        return Some((
-            endpoint_id.to_string(),
-            device.wan_cluster_id.trim().to_string(),
-            device.wan_pair_secret.trim().to_string(),
-        ));
-    }
 
-    // Legacy alpha.4 compatibility: recover credentials from the old host field.
     let rest = device.host.strip_prefix("wan://")?;
     let mut parts = rest.splitn(3, '/');
     let endpoint_id = parts.next()?.trim();
     let cluster_id = parts.next()?.trim();
-    let pair_secret = parts.next()?.trim();
+    let pair_and_route = parts.next()?.trim();
+    let pair_secret = pair_and_route.split('|').next().unwrap_or(pair_and_route).trim();
     if endpoint_id.is_empty() || cluster_id.is_empty() || pair_secret.is_empty() {
         return None;
     }
@@ -412,29 +372,29 @@ def patch_input_targets(root: Path) -> None:
 }
 
 fn wan_target_addr(device: &Device, endpoint_id: &str) -> String {
-    quic_transport::format_wan_peer_addr(
-        endpoint_id,
-        &device.wan_relay_urls,
-        &device.wan_direct_addresses,
-    )
+    let Some(rest) = device.host.strip_prefix("wan://") else {
+        return format!("wan:{endpoint_id}");
+    };
+    let mut parts = rest.splitn(3, '/');
+    let _ = parts.next();
+    let _ = parts.next();
+    let pair_and_route = parts.next().unwrap_or_default();
+    if let Some((_, route)) = pair_and_route.split_once('|') {
+        return format!("wan:{endpoint_id}|{route}");
+    }
+    format!("wan:{endpoint_id}")
 }
-''',
-        "persisted WAN target credentials",
-    )
+'''
+    text = replace_once(text, old, new, "WAN target persisted credentials")
 
     text = replace_once(
         text,
-        '''        let target_addr = wan_credentials
-            .as_ref()
-            .map(|(endpoint_id, _, _)| format!("wan:{endpoint_id}"))
+        '''            .map(|(endpoint_id, _, _)| format!("wan:{endpoint_id}"))
             .unwrap_or_else(|| format!("{}:{}", device.host, quic_port));''',
-        '''        let target_addr = wan_credentials
-            .as_ref()
-            .map(|(endpoint_id, _, _)| wan_target_addr(device, endpoint_id))
+        '''            .map(|(endpoint_id, _, _)| wan_target_addr(device, endpoint_id))
             .unwrap_or_else(|| format!("{}:{}", device.host, quic_port));''',
-        "input target explicit WAN address",
+        "WAN target explicit address ticket",
     )
-
     path.write_text(text, encoding="utf-8")
 
 
@@ -442,9 +402,7 @@ def patch_backend_commands(root: Path) -> None:
     path = root / "src-tauri" / "src" / "lib.rs"
     text = path.read_text(encoding="utf-8")
 
-    text = replace_once(
-        text,
-        '''#[tauri::command]
+    old_probe = '''#[tauri::command]
 fn probe_wan_peer(
     endpoint_id: String,
     state: tauri::State<'_, AppRuntime>,
@@ -461,8 +419,8 @@ fn probe_wan_peer(
     );
     transport.probe(peer)
 }
-''',
-        '''#[tauri::command]
+'''
+    new_probe = '''#[tauri::command]
 fn wan_connection_info(
     state: tauri::State<'_, AppRuntime>,
 ) -> Result<quic_transport::WanConnectionInfo, String> {
@@ -485,26 +443,27 @@ fn probe_wan_peer(
     if relay_urls.iter().all(|value| value.trim().is_empty())
         && direct_addresses.iter().all(|value| value.trim().is_empty())
     {
-        return Err("连接密钥没有携带可用地址。请在被控电脑升级到当前版本并重新生成连接密钥。".to_string());
+        return Err(
+            "这是旧版或未就绪的连接密钥，没有携带可用公网地址。请在被控电脑重新生成连接密钥。"
+                .to_string(),
+        );
     }
     let transport = state
         .quic_transport_handle()
         .ok_or_else(|| "公网连接服务还没有启动，请稍后重试。".to_string())?;
-    let addr = quic_transport::format_wan_peer_addr(
-        endpoint_id.trim(),
-        &relay_urls,
-        &direct_addresses,
-    );
     let peer = transport.peer(
-        addr,
+        quic_transport::format_wan_peer_addr(
+            endpoint_id.trim(),
+            &relay_urls,
+            &direct_addresses,
+        ),
         endpoint_id.trim().to_string(),
         quic_transport::PROTOCOL_VERSION,
     );
     transport.probe(peer)
 }
-''',
-        "WAN connection-info and robust probe commands",
-    )
+'''
+    text = replace_once(text, old_probe, new_probe, "WAN connection info and explicit probe")
 
     text = replace_once(
         text,
@@ -515,9 +474,8 @@ fn probe_wan_peer(
             wan_connection_info,
             probe_wan_peer,
             probe_lan_peer,''',
-        "register WAN connection-info command",
+        "register WAN connection info command",
     )
-
     path.write_text(text, encoding="utf-8")
 
 
@@ -525,9 +483,7 @@ def patch_frontend(root: Path) -> None:
     path = root / "src" / "App.tsx"
     text = path.read_text(encoding="utf-8")
 
-    text = replace_once(
-        text,
-        '''interface ConnectionKeyPayload {
+    old_interface = '''interface ConnectionKeyPayload {
   version: 1
   endpointId: string
   name: string
@@ -536,9 +492,9 @@ def patch_frontend(root: Path) -> None:
   pairSecret: string
   screens: Screen[]
 }
-''',
-        '''interface ConnectionKeyPayload {
-  version: 2
+'''
+    new_interface = '''interface ConnectionKeyPayload {
+  version: number
   endpointId: string
   name: string
   platform: string
@@ -555,26 +511,25 @@ interface WanConnectionInfo {
   directAddresses: string[]
   ready: boolean
 }
-''',
-        "connection key v2 model",
-    )
+'''
+    text = replace_once(text, old_interface, new_interface, "connection key v2 interface")
 
-    text = replace_once(
-        text,
-        '''function remoteDevices(layout?: LayoutState) {''',
-        '''function randomHex(byteCount: number) {
+    decode_block = '''function decodeBase64Url(value: string) {
+  const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((value.length + 3) % 4)
+  const binary = atob(padded)
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0))
+}
+'''
+    decode_replacement = decode_block + '''
+function randomHex(byteCount: number) {
   const bytes = new Uint8Array(byteCount)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+'''
+    text = replace_once(text, decode_block, decode_replacement, "frontend random secret helper")
 
-function remoteDevices(layout?: LayoutState) {''',
-        "secure key rotation helper",
-    )
-
-    text = replace_once(
-        text,
-        '''function makeConnectionKey(layout: LayoutState, runtime: RuntimeStatus) {
+    old_make = '''function makeConnectionKey(layout: LayoutState, runtime: RuntimeStatus) {
   const local = localDevice(layout)
   const endpointId = runtime.discovery.localPeer.transportPublicKey.trim()
   if (!local || !endpointId || !layout.clusterId.trim() || !layout.pairSecret.trim()) return ''
@@ -588,20 +543,23 @@ function remoteDevices(layout?: LayoutState) {''',
     screens: local.screens,
   }
   return KEY_PREFIX + encodeBase64Url(new TextEncoder().encode(JSON.stringify(payload)))
-}''',
-        '''function makeConnectionKey(layout: LayoutState, runtime: RuntimeStatus, network: WanConnectionInfo) {
+}
+'''
+    new_make = '''function makeConnectionKey(layout: LayoutState, runtime: RuntimeStatus, network: WanConnectionInfo) {
   const local = localDevice(layout)
   const endpointId = network.endpointId.trim() || runtime.discovery.localPeer.transportPublicKey.trim()
-  const relayUrls = network.relayUrls.filter((value) => value.trim())
-  const directAddresses = network.directAddresses.filter((value) => value.trim())
+  const relayUrls = network.relayUrls.map((value) => value.trim()).filter(Boolean)
+  const directAddresses = network.directAddresses.map((value) => value.trim()).filter(Boolean)
   if (
     !local ||
-    !endpointId ||
     !network.ready ||
     relayUrls.length === 0 ||
+    !endpointId ||
     !layout.clusterId.trim() ||
     !layout.pairSecret.trim()
-  ) return ''
+  ) {
+    return ''
+  }
   const payload: ConnectionKeyPayload = {
     version: 2,
     endpointId,
@@ -614,135 +572,178 @@ function remoteDevices(layout?: LayoutState) {''',
     screens: local.screens,
   }
   return KEY_PREFIX + encodeBase64Url(new TextEncoder().encode(JSON.stringify(payload)))
-}''',
-        "make connection key only after relay-ready",
-    )
+}
+'''
+    text = replace_once(text, old_make, new_make, "make connection key with explicit WAN addresses")
 
-    text = replace_once(
-        text,
-        '''    parsed.version !== 1 ||
+    old_parse = '''function parseConnectionKey(key: string): ConnectionKeyPayload {
+  const normalized = key.trim()
+  if (!normalized.startsWith(KEY_PREFIX)) throw new Error('连接密钥格式不正确。')
+  const raw = normalized.slice(KEY_PREFIX.length)
+  if (!raw || raw.length > 24000) throw new Error('连接密钥格式不正确。')
+  let parsed: ConnectionKeyPayload
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(decodeBase64Url(raw))) as ConnectionKeyPayload
+  } catch {
+    throw new Error('连接密钥无法解析，请重新复制完整密钥。')
+  }
+  if (
+    parsed.version !== 1 ||
     !parsed.endpointId?.trim() ||
     !parsed.clusterId?.trim() ||
     !parsed.pairSecret?.trim() ||
-    !Array.isArray(parsed.screens) ||''',
-        '''    parsed.version !== 2 ||
+    !Array.isArray(parsed.screens) ||
+    parsed.screens.length === 0
+  ) {
+    throw new Error('连接密钥内容不完整，请在被控电脑重新复制。')
+  }
+  return parsed
+}
+'''
+    new_parse = '''function parseConnectionKey(key: string): ConnectionKeyPayload {
+  const normalized = key.trim()
+  if (!normalized.startsWith(KEY_PREFIX)) throw new Error('连接密钥格式不正确。')
+  const raw = normalized.slice(KEY_PREFIX.length)
+  if (!raw || raw.length > 24000) throw new Error('连接密钥格式不正确。')
+  let parsed: ConnectionKeyPayload
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(decodeBase64Url(raw))) as ConnectionKeyPayload
+  } catch {
+    throw new Error('连接密钥无法解析，请重新复制完整密钥。')
+  }
+  if (parsed.version !== 2) {
+    throw new Error('这是旧版连接密钥。请在被控电脑升级到当前版本后，点击“重新生成连接密钥”。')
+  }
+  if (
     !parsed.endpointId?.trim() ||
     !parsed.clusterId?.trim() ||
     !parsed.pairSecret?.trim() ||
     !Array.isArray(parsed.relayUrls) ||
-    parsed.relayUrls.length === 0 ||
+    parsed.relayUrls.filter((value) => value?.trim()).length === 0 ||
     !Array.isArray(parsed.directAddresses) ||
-    !Array.isArray(parsed.screens) ||''',
-        "connection key v2 validation",
-    )
-
-    text = replace_once(
-        text,
-        '''  return parsed
-}''',
-        '''  if (parsed.version !== 2) {
-    throw new Error('这是旧版本连接密钥。请在被控电脑升级到当前版本后重新生成连接密钥。')
+    !Array.isArray(parsed.screens) ||
+    parsed.screens.length === 0
+  ) {
+    throw new Error('连接密钥内容不完整，请在被控电脑重新生成后复制完整密钥。')
   }
   return parsed
-}''',
-        "old key actionable error",
+}
+'''
+    text = replace_once(text, old_parse, new_parse, "parse connection key v2")
+
+    text = replace_once(
+        text,
+        '    host: `wan://${endpointId}/${payload.clusterId}/${payload.pairSecret}`,',
+        '    host: `wan://${endpointId}/${payload.clusterId}/${payload.pairSecret}|r=${payload.relayUrls.join(",")}|a=${payload.directAddresses.join(",")}`,',
+        "persist WAN routing ticket in host",
     )
 
     text = replace_once(
         text,
-        '''    transportPublicKey: endpointId,
-    protocolVersion: 2,''',
-        '''    transportPublicKey: endpointId,
-    wanClusterId: payload.clusterId,
-    wanPairSecret: payload.pairSecret,
-    wanRelayUrls: payload.relayUrls,
-    wanDirectAddresses: payload.directAddresses,
-    protocolVersion: 2,''',
-        "persist WAN key route fields",
+        '''  const online = Boolean(runtime?.started && runtime.discovery.localPeer.transportPublicKey)''',
+        '''  const online = Boolean(
+    runtime?.started &&
+      (role === 'client' ? connectionKey : runtime.discovery.localPeer.transportPublicKey),
+  )''',
+        "client readiness follows usable key",
     )
 
-    text = replace_once(
-        text,
-        '''  const online = Boolean(runtime?.started && runtime.discovery.localPeer.transportPublicKey)
-
-  const refreshKey = useCallback(async () => {
+    old_refresh = '''  const refreshKey = useCallback(async () => {
     if (role !== 'client' || !layout || !runtime) return
     const key = makeConnectionKey(layout, runtime)
     setConnectionKey(key)
     setMessage(key ? '' : '正在准备公网连接，请稍候…')
-  }, [role, layout, runtime])''',
-        '''  const online = role === 'client'
-    ? Boolean(runtime?.started && connectionKey)
-    : Boolean(runtime?.started && runtime.discovery.localPeer.transportPublicKey)
-
-  const refreshKey = useCallback(async () => {
+  }, [role, layout, runtime])
+'''
+    new_refresh = '''  const refreshKey = useCallback(async () => {
     if (role !== 'client' || !layout || !runtime) return false
     try {
       const network = await invoke<WanConnectionInfo>('wan_connection_info')
       const key = makeConnectionKey(layout, runtime, network)
       setConnectionKey(key)
-      setMessage(key ? '' : '正在注册公网连接地址，请保持网络正常，稍后会自动生成密钥…')
+      setMessage(
+        key
+          ? ''
+          : '公网中继正在建立，连接密钥暂不可用。请保持网络连接，软件会自动重试。',
+      )
       return Boolean(key)
     } catch (error) {
       setConnectionKey('')
-      setMessage(`公网连接服务未就绪：${String(error)}`)
+      setMessage(`公网连接初始化失败：${String(error)}`)
       return false
     }
-  }, [role, layout, runtime])''',
-        "live WAN-ready key refresh",
-    )
+  }, [role, layout, runtime])
+'''
+    text = replace_once(text, old_refresh, new_refresh, "refresh key from live WAN address info")
 
     text = replace_once(
         text,
         '''  useEffect(() => {
     void refreshKey()
-  }, [refreshKey])''',
+  }, [refreshKey])
+''',
         '''  useEffect(() => {
     if (role !== 'client') return
-    let stopped = false
+    let cancelled = false
     let timer: number | undefined
+
     const poll = async () => {
       const ready = await refreshKey()
-      if (!stopped && !ready) timer = window.setTimeout(() => void poll(), 1200)
+      if (!cancelled && !ready) {
+        timer = window.setTimeout(() => void poll(), 1200)
+      }
     }
     void poll()
+
     return () => {
-      stopped = true
+      cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [role, refreshKey])''',
-        "automatic relay-ready polling",
+  }, [refreshKey, role])
+''',
+        "poll WAN readiness until key is valid",
     )
 
-    text = replace_once(
-        text,
-        '''  async function copyKey() {
-    if (!connectionKey) return''',
-        '''  async function regenerateConnectionKey() {
+    copy_block = '''  async function copyKey() {
+    if (!connectionKey) return
+    try {
+      await navigator.clipboard.writeText(connectionKey)
+    } catch {
+      await invoke('write_clipboard_text', { text: connectionKey })
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+'''
+    copy_replacement = copy_block + '''
+  async function regenerateConnectionKey() {
     if (role !== 'client' || !layout || !runtime) return
     setBusy(true)
-    setConnectionKey('')
-    setCopied(false)
-    setMessage('正在撤销旧密钥并生成新的连接授权…')
+    setMessage('正在生成新的连接授权…')
     try {
-      const state = await saveLayout({ ...layout, pairSecret: randomHex(32) })
+      const state = await saveLayout({
+        ...layout,
+        pairSecret: randomHex(32),
+      })
       setSnapshot(state)
       setRuntime(state.runtime)
       const network = await invoke<WanConnectionInfo>('wan_connection_info')
       const key = makeConnectionKey(state.layout, state.runtime, network)
       setConnectionKey(key)
-      setMessage(key ? '新的连接密钥已生成，旧密钥已失效。' : '新的授权已生成，正在等待公网地址就绪…')
+      setCopied(false)
+      setMessage(
+        key
+          ? '新的连接密钥已生成，之前的连接密钥已失效。'
+          : '新的连接授权已生成，正在等待公网中继就绪；就绪后密钥会自动显示。',
+      )
     } catch (error) {
       setMessage(`重新生成连接密钥失败：${String(error)}`)
     } finally {
       setBusy(false)
     }
   }
-
-  async function copyKey() {
-    if (!connectionKey) return''',
-        "real key regeneration action",
-    )
+'''
+    text = replace_once(text, copy_block, copy_replacement, "real connection key regeneration")
 
     text = replace_once(
         text,
@@ -758,8 +759,14 @@ function remoteDevices(layout?: LayoutState) {''',
     text = replace_once(
         text,
         '''                <button className="button secondary" onClick={() => void refreshKey()}>刷新密钥显示</button>''',
-        '''                <button className="button secondary" disabled={busy} onClick={() => void regenerateConnectionKey()}>{busy ? '正在生成…' : '重新生成连接密钥'}</button>''',
-        "key regeneration button",
+        '''                <button className="button secondary" disabled={busy} onClick={() => void regenerateConnectionKey()}>重新生成连接密钥</button>''',
+        "regenerate key button",
+    )
+
+    text = text.replace(
+        '<span className="status-dot online" />',
+        '<span className={`status-dot ${online ? "online" : ""}`} />',
+        1,
     )
 
     path.write_text(text, encoding="utf-8")
@@ -770,11 +777,12 @@ def main() -> None:
     parser.add_argument("root", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
+
     patch_transport(root)
-    patch_device_schema(root)
     patch_input_targets(root)
     patch_backend_commands(root)
     patch_frontend(root)
+
     print("WAN reliability overlay applied")
 
 

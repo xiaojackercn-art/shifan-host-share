@@ -45,14 +45,21 @@ def main() -> None:
     if iroh_dep not in cargo:
         cargo = replace_once(cargo, 'quinn = "0.11"', f'quinn = "0.11"\n{iroh_dep}', "Cargo iroh dependency")
 
-    # netwatch -> wmi 0.18.x accepts a wide windows/windows-core range. On a fresh Windows
-    # resolver this can otherwise select windows 0.61 with windows-core 0.62, which are
-    # different COM type universes and cannot compile together. Force wmi's compatible branch
-    # to the matching Windows 0.61 family while allowing unrelated dependencies to keep their
-    # own 0.62 family when required.
+    # Iroh 1.0.3 pulls netwatch 0.19.1 on Windows. netwatch uses the Windows 0.62 API
+    # family while wmi 0.18.x deliberately accepts a broad >=0.59,<0.63 range. A free
+    # resolver can therefore mix windows 0.61 with windows-core 0.62 inside wmi, producing
+    # incompatible COM Interface types. Pin the exact coherent family already used by
+    # netwatch: windows/windows-core 0.62.2 + windows-result 0.4.1. Pin wmi 0.18.1 as well
+    # so registry updates cannot silently move this known-good Windows graph again.
     win_anchor = 'windows-service = "0.8.1"'
-    win_pin = 'windows-service = "0.8.1"\nwindows = "=0.61.3"\nwindows-core = "=0.61.2"\nwindows-result = "=0.3.4"'
-    if 'windows-core = "=0.61.2"' not in cargo:
+    win_pin = (
+        'windows-service = "0.8.1"\n'
+        'windows = "=0.62.2"\n'
+        'windows-core = "=0.62.2"\n'
+        'windows-result = "=0.4.1"\n'
+        'wmi = "=0.18.1"'
+    )
+    if 'windows-core = "=0.62.2"' not in cargo:
         cargo = replace_once(cargo, win_anchor, win_pin, "Windows COM dependency pins")
     cargo_path.write_text(cargo, encoding="utf-8")
 

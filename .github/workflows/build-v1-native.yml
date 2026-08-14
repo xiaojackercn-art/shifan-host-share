@@ -2,7 +2,7 @@ name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic, v1-wan-key, main]
+    branches: [v1-native-quic, v1-wan-key, v1-wan-reliability, main]
     paths:
       - "native_v1/**"
       - ".github/workflows/build-v1-native.yml"
@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="视饭AI:主机共享 Native Alpha 跨网络版。本版本重点优化公网键鼠体验：鼠标移动采用最新坐标合并发送，避免网络抖动后回放旧坐标；Windows 键盘统一使用公网缓存目标并改用扫描码注入；界面、Logo 与安装程序重新设计，Windows 安装流程固定为简体中文。被控电脑生成 SFAI1- 连接密钥，主控电脑粘贴即可连接，无需同一局域网、无需公网 IP、端口或路由器端口映射。"
+          notes="视饭AI:主机共享 Native Alpha 跨网络版。本版本修复公网地址发现不完整导致的 No addressing information available：连接密钥升级为 v2，在公网中继真正就绪后才生成，并携带 Iroh 中继/直连地址；主控端优先使用密钥内显式地址连接，不再只依赖 EndpointId 地址查询；重新生成连接密钥会真正轮换授权密钥并使旧密钥失效。保留 250Hz 鼠标最新坐标合并、Windows 键盘扫描码注入和中文安装界面。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
           else
@@ -80,6 +80,7 @@ jobs:
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
           python native_v1/apply_wan_overlay.py native-upstream
           python native_v1/apply_input_quality_overlay.py native-upstream
+          python native_v1/apply_wan_reliability_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
@@ -173,6 +174,7 @@ jobs:
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
           python native_v1/apply_wan_overlay.py native-upstream
           python native_v1/apply_input_quality_overlay.py native-upstream
+          python native_v1/apply_wan_reliability_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md

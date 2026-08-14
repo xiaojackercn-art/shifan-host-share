@@ -1,19 +1,19 @@
-name: Build Native QUIC v1 Alpha
+name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic]
+    branches: [v1-native-quic, main]
     paths:
       - "native_v1/**"
-      - "scripts/prepare_icon.py"
       - ".github/workflows/build-v1-native.yml"
+      - "README.md"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: shifan-host-share-native-v1
+  group: shifan-host-share-native-${{ github.ref_name }}
   cancel-in-progress: true
 
 env:
@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="v1 Native Alpha：彻底切换到 Rust/Tauri + UDP 局域网发现 + QUIC/TLS 1.3 原生软件 KVM。删除 Python/Deskflow/TCP 24800 链路。包含 Windows/macOS 原生键鼠、边缘跨屏、键盘跟随、剪贴板、XXXX-XXXX-XXXX 配对挑战。此版本用于两台实体电脑核心验收，未通过实机验收前不标记 stable。"
+          notes="视饭AI:主机共享 Native Alpha。首次启动只需选择主控电脑/被控电脑；主控端通过局域网自动查找另一台，不需要填写 IP 或 24800 端口。键鼠与剪贴板使用原生 QUIC/TLS 通道。配对码格式 XXXX-XXXX-XXXX。安装包和应用窗口统一使用指定的视饭AI图标。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
           else
@@ -61,17 +61,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare product icon
+      - name: Materialize specified product icon
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check pillow
-          python scripts/prepare_icon.py
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path assets/AI.png)) {
-            New-Item -ItemType Directory -Force assets | Out-Null
-            python native_v1/materialize_icon_fallback.py assets/icon-source.png
-            python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
-          }
-          if (!(Test-Path assets/AI.png)) { throw "Product icon was not generated" }
+          python native_v1/materialize_icon_fallback.py assets/AI.png
+          if (!(Test-Path assets/AI.png)) { throw "Specified product icon was not generated" }
       - name: Prepare pinned native source
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -81,8 +75,10 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          mkdir -p native-upstream/public
+          cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
-      - name: Install dependencies and generate icons
+      - name: Install dependencies and generate native icons
         working-directory: native-upstream
         shell: pwsh
         run: |
@@ -107,14 +103,14 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           $installer = Get-ChildItem "native-upstream/src-tauri/target/release/bundle/nsis" -Filter *.exe -Recurse | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer not found" }
-          $out = "out/ShifanAI-HostShare-v1-Windows-x64-Setup.exe"
+          $out = "out/ShifanAI-HostShare-Windows-x64-Setup.exe"
           Copy-Item $installer.FullName $out
           Get-FileHash $out -Algorithm SHA256 | Format-List
           gh release upload $env:TAG $out --clobber --repo $env:GITHUB_REPOSITORY
       - uses: actions/upload-artifact@v4
         with:
-          name: ShifanAI-HostShare-v1-Windows-x64
-          path: out/ShifanAI-HostShare-v1-Windows-x64-Setup.exe
+          name: ShifanAI-HostShare-Windows-x64
+          path: out/ShifanAI-HostShare-Windows-x64-Setup.exe
 
   macos:
     needs: prepare
@@ -124,10 +120,10 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
-            asset: ShifanAI-HostShare-v1-macOS-AppleSilicon.dmg
+            asset: ShifanAI-HostShare-macOS-AppleSilicon.dmg
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            asset: ShifanAI-HostShare-v1-macOS-Intel.dmg
+            asset: ShifanAI-HostShare-macOS-Intel.dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -140,16 +136,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare product icon
+      - name: Materialize specified product icon
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check pillow
-          if ! python scripts/prepare_icon.py || [ ! -f assets/AI.png ]; then
-            mkdir -p assets
-            python native_v1/materialize_icon_fallback.py assets/icon-source.png
-            python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
-          fi
+          python native_v1/materialize_icon_fallback.py assets/AI.png
           test -f assets/AI.png
       - name: Prepare pinned native source
         env:
@@ -160,8 +151,10 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          mkdir -p native-upstream/public
+          cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
-      - name: Install dependencies and generate icons
+      - name: Install dependencies and generate native icons
         working-directory: native-upstream
         shell: bash
         run: |

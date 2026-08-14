@@ -94,12 +94,6 @@ def patch_input_hot_path(root: Path) -> None:
         "            *active = None;\n            clear_windows_keyboard_target(context);\n            context.remote_active.store(false, Ordering::Relaxed);",
         "Windows edge return",
     )
-    text = replace_last(
-        text,
-        "    context.remote_active.store(false, Ordering::Relaxed);\n    context.just_crossed.store(false, Ordering::Relaxed);",
-        "    clear_windows_keyboard_target(context);\n    context.remote_active.store(false, Ordering::Relaxed);\n    context.just_crossed.store(false, Ordering::Relaxed);",
-        "Windows release",
-    )
     text = text.replace(
         '#[cfg(target_os = "windows")]\nfn cached_windows_input_desktop_is_default() -> bool {',
         '#[cfg(target_os = "windows")]\nfn clear_windows_keyboard_target(context: &WindowsCaptureContext) {\n    if let Ok(mut target) = context.keyboard_target.lock() {\n        *target = None;\n    }\n}\n\n#[cfg(target_os = "windows")]\nfn cached_windows_input_desktop_is_default() -> bool {',

@@ -1,0 +1,218 @@
+name: Build Native QUIC v1 Alpha
+
+on:
+  push:
+    branches: [v1-native-quic]
+    paths:
+      - "native_v1/**"
+      - "scripts/prepare_icon.py"
+      - ".github/workflows/build-v1-native.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shifan-host-share-native-v1
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPO: XxMinor/mykvm
+  UPSTREAM_SHA: a2ea4164861de31b562c8417eeb7879dbc8c23cb
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < native_v1/VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Create or refresh prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes=$(cat <<'EOF'
+          ## 视饭AI：主机共享 v1 Native Alpha
+
+          这一版本不是继续修补 v0.x 的 Python + Deskflow/TCP 24800 架构，而是切换到原生 Rust/Tauri + QUIC/TLS 1.3 软件 KVM 架构。
+
+          - 删除 Deskflow 进程依赖、TCP 24800 转发层和旧配对端口链路
+          - UDP 局域网发现，默认 47833；QUIC/TLS 1.3 键鼠与剪贴板传输，默认 47834
+          - Windows / macOS 原生键鼠捕获与注入
+          - 鼠标边缘跨屏、键盘跟随、滚轮、文本/图片剪贴板
+          - 配对挑战码改为 XXXX-XXXX-XXXX，配对关系持久保存
+          - Windows 使用 Tauri/NSIS 安装包；macOS 输出 Apple Silicon / Intel DMG
+          - 图标继续使用用户指定的 AI.png，并生成圆角透明多尺寸图标
+
+          **这是原生核心验证版，不宣称已经完成两台真实电脑的最终验收。** CI 负责源码、核心检查和安装包构建；Win→Win、Win↔Mac 的真实跨屏仍需要两台实体设备验证后才进入 beta/stable。
+          EOF
+          )
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
+          fi
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare exact rounded product icon
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pillow
+          python scripts/prepare_icon.py
+          if (!(Test-Path assets/AI.png)) { throw "assets/AI.png was not generated" }
+      - name: Pin native upstream and apply product patch
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/${UPSTREAM_REPO}.git native-upstream
+          git -C native-upstream checkout "$UPSTREAM_SHA"
+          python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
+      - name: Install frontend dependencies and generate Tauri icons
+        working-directory: native-upstream
+        shell: pwsh
+        run: |
+          npm ci
+          npm exec -- tauri icon "$env:GITHUB_WORKSPACE/assets/AI.png"
+      - name: Verify frontend and Rust core
+        working-directory: native-upstream
+        shell: pwsh
+        run: |
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Build Windows NSIS installer
+        working-directory: native-upstream
+        shell: pwsh
+        run: |
+          npm exec -- tauri build -- --bundles nsis
+      - name: Collect Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $installer = Get-ChildItem -Path "native-upstream/src-tauri/target/release/bundle/nsis" -Filter *.exe -Recurse | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found" }
+          Copy-Item $installer.FullName "out/ShifanAI-HostShare-v1-Windows-x64-Setup.exe"
+          Get-FileHash "out/ShifanAI-HostShare-v1-Windows-x64-Setup.exe" -Algorithm SHA256 | Format-List
+      - name: Upload Windows release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" out/ShifanAI-HostShare-v1-Windows-x64-Setup.exe --clobber --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShifanAI-HostShare-v1-Windows-x64
+          path: out/ShifanAI-HostShare-v1-Windows-x64-Setup.exe
+
+  macos:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            asset: ShifanAI-HostShare-v1-macOS-AppleSilicon.dmg
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: ShifanAI-HostShare-v1-macOS-Intel.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare exact rounded product icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pillow
+          python scripts/prepare_icon.py
+          test -f assets/AI.png
+      - name: Pin native upstream and apply product patch
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/${UPSTREAM_REPO}.git native-upstream
+          git -C native-upstream checkout "$UPSTREAM_SHA"
+          python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
+      - name: Install frontend dependencies and generate Tauri icons
+        working-directory: native-upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm exec -- tauri icon "$GITHUB_WORKSPACE/assets/AI.png"
+      - name: Verify frontend and Rust core
+        working-directory: native-upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target "${{ matrix.target }}"
+      - name: Build macOS DMG
+        working-directory: native-upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm exec -- tauri build -- --target "${{ matrix.target }}" --bundles app,dmg --no-sign
+      - name: Collect macOS package
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          dmg="$(find "native-upstream/src-tauri/target/${TARGET}/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          cp "$dmg" "out/$ASSET"
+          shasum -a 256 "out/$ASSET"
+      - name: Upload macOS release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          ASSET: ${{ matrix.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "out/$ASSET" --clobber --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}

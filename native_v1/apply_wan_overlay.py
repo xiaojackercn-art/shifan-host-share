@@ -37,16 +37,23 @@ def main() -> None:
     types_path.write_text(types, encoding="utf-8")
 
     # Iroh gives this product globally dialable EndpointIds, NAT traversal and relay fallback.
-    # Disable Iroh's optional default portmapper feature on desktop builds. The portmapper
-    # dependency currently pulls a Windows WMI dependency whose broad windows/windows-core
-    # version ranges can resolve to incompatible 0.61/0.62 pairs. Iroh's QUIC, hole punching,
-    # discovery and relay fallback do not require that optional UPnP/NAT-PMP port mapping
-    # feature. Keep the ring TLS backend explicitly enabled.
+    # Disable Iroh's optional default portmapper feature on desktop builds. Keep the ring TLS
+    # backend explicitly enabled.
     cargo_path = root / "src-tauri" / "Cargo.toml"
     cargo = cargo_path.read_text(encoding="utf-8")
     iroh_dep = 'iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"] }'
     if iroh_dep not in cargo:
         cargo = replace_once(cargo, 'quinn = "0.11"', f'quinn = "0.11"\n{iroh_dep}', "Cargo iroh dependency")
+
+    # netwatch -> wmi 0.18.x accepts a wide windows/windows-core range. On a fresh Windows
+    # resolver this can otherwise select windows 0.61 with windows-core 0.62, which are
+    # different COM type universes and cannot compile together. Force wmi's compatible branch
+    # to the matching Windows 0.61 family while allowing unrelated dependencies to keep their
+    # own 0.62 family when required.
+    win_anchor = 'windows-service = "0.8.1"'
+    win_pin = 'windows-service = "0.8.1"\nwindows = "=0.61.3"\nwindows-core = "=0.61.2"\nwindows-result = "=0.3.4"'
+    if 'windows-core = "=0.61.2"' not in cargo:
+        cargo = replace_once(cargo, win_anchor, win_pin, "Windows COM dependency pins")
     cargo_path.write_text(cargo, encoding="utf-8")
 
     # Explicitly use the generated product icon for the application bundle and NSIS installer.

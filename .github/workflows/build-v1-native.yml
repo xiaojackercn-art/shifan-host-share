@@ -61,10 +61,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Materialize specified product icon
+      - name: Prepare exact product icon
         shell: pwsh
         run: |
-          python native_v1/materialize_icon_fallback.py assets/AI.png
+          python -m pip install --disable-pip-version-check pillow
+          python native_v1/materialize_icon_fallback.py assets/icon-source.png
+          python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
           if (!(Test-Path assets/AI.png)) { throw "Specified product icon was not generated" }
       - name: Prepare pinned native source
         env:
@@ -136,11 +138,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Materialize specified product icon
+      - name: Prepare exact product icon
         shell: bash
         run: |
           set -euo pipefail
-          python native_v1/materialize_icon_fallback.py assets/AI.png
+          python -m pip install --disable-pip-version-check pillow
+          python native_v1/materialize_icon_fallback.py assets/icon-source.png
+          python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
           test -f assets/AI.png
       - name: Prepare pinned native source
         env:

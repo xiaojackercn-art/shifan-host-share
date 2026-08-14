@@ -2,11 +2,12 @@ name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic, main]
+    branches: [v1-native-quic, v1-wan-key, main]
     paths:
       - "native_v1/**"
       - ".github/workflows/build-v1-native.yml"
       - "README.md"
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
@@ -42,7 +43,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="视饭AI:主机共享 Native Alpha。首次启动只需选择主控电脑/被控电脑；主控端通过局域网自动查找另一台，不需要填写 IP 或 24800 端口。键鼠与剪贴板使用原生 QUIC/TLS 通道。配对码格式 XXXX-XXXX-XXXX。安装包和应用窗口统一使用指定的视饭AI图标。"
+          notes="视饭AI:主机共享 Native Alpha 跨网络版。本版本重点优化公网键鼠体验：鼠标移动采用最新坐标合并发送，避免网络抖动后回放旧坐标；Windows 键盘统一使用公网缓存目标并改用扫描码注入；界面、Logo 与安装程序重新设计，Windows 安装流程固定为简体中文。被控电脑生成 SFAI1- 连接密钥，主控电脑粘贴即可连接，无需同一局域网、无需公网 IP、端口或路由器端口映射。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
           else
@@ -61,13 +62,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare exact product icon
+      - name: Prepare product icon
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check pillow
           python native_v1/materialize_icon_fallback.py assets/icon-source.png
           python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
-          if (!(Test-Path assets/AI.png)) { throw "Specified product icon was not generated" }
+          if (!(Test-Path assets/AI.png)) { throw "Product icon was not generated" }
       - name: Prepare pinned native source
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -77,6 +78,8 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          python native_v1/apply_wan_overlay.py native-upstream
+          python native_v1/apply_input_quality_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
@@ -86,12 +89,25 @@ jobs:
         run: |
           npm ci
           npm exec -- tauri icon "$env:GITHUB_WORKSPACE/assets/AI.png"
-      - name: Verify source
+      - name: Verify frontend
+        working-directory: native-upstream
+        shell: pwsh
+        run: npm run build
+      - name: Verify Rust source
         working-directory: native-upstream
         shell: pwsh
         run: |
-          npm run build
-          cargo check --manifest-path src-tauri/Cargo.toml
+          $ErrorActionPreference = "Continue"
+          $lines = cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | ForEach-Object { $_.ToString() }
+          $exit = $LASTEXITCODE
+          $lines | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) {
+            $tail = ($lines | Select-Object -Last 35) -join " | "
+            if ($tail.Length -gt 3500) { $tail = $tail.Substring($tail.Length - 3500) }
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host "::error title=Windows Rust compile failure::$tail"
+            exit $exit
+          }
       - name: Build Windows installer
         working-directory: native-upstream
         shell: pwsh
@@ -138,7 +154,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare exact product icon
+      - name: Prepare product icon
         shell: bash
         run: |
           set -euo pipefail
@@ -155,6 +171,8 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          python native_v1/apply_wan_overlay.py native-upstream
+          python native_v1/apply_input_quality_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md

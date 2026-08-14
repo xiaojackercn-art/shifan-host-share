@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">视饭AI:主机共享 界面预览</title>
+  <desc id="desc">主控电脑连接与设备管理界面预览</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8faff"/>
+      <stop offset="1" stop-color="#eef3f9"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f6de2"/>
+      <stop offset="1" stop-color="#0a3c92"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#1e314d" flood-opacity=".08"/>
+    </filter>
+  </defs>
+
+  <rect width="1400" height="820" rx="28" fill="url(#bg)"/>
+  <rect width="1400" height="68" rx="28" fill="#ffffff"/>
+  <rect y="40" width="1400" height="28" fill="#ffffff"/>
+  <line x1="0" y1="68" x2="1400" y2="68" stroke="#e4eaf2"/>
+
+  <g transform="translate(24 15)">
+    <rect width="38" height="38" rx="10" fill="url(#brand)"/>
+    <rect x="7" y="9" width="18" height="13" rx="2.5" fill="none" stroke="#fff" stroke-width="2"/>
+    <rect x="18" y="17" width="15" height="11" rx="2.2" fill="none" stroke="#cde4ff" stroke-width="2"/>
+    <path d="M10 27h8m-4-5v5M22 32h7m-3.5-4v4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    <path d="M15 14h9m-3-3 4 3-4 3" stroke="#62e0c5" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="74" y="31" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700" fill="#172033">视饭AI:主机共享</text>
+  <text x="74" y="49" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#8792a5">跨设备键鼠控制</text>
+
+  <g transform="translate(620 24)">
+    <circle cx="0" cy="10" r="4" fill="#1eaf7d"/>
+    <circle cx="0" cy="10" r="8" fill="#1eaf7d" opacity=".11"/>
+    <text x="14" y="14" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#6d7990">连接服务正常</text>
+  </g>
+
+  <g transform="translate(1245 17)" font-family="Segoe UI, sans-serif" font-size="17" fill="#68758a">
+    <text x="0" y="25">—</text><text x="48" y="25">□</text><text x="96" y="25">×</text>
+  </g>
+
+  <g transform="translate(88 102)">
+    <rect width="1224" height="242" rx="22" fill="#fff" stroke="#e0e7f0" filter="url(#shadow)"/>
+    <text x="38" y="49" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="800" letter-spacing="2" fill="#2463d4">SHIFAN HOST SHARE</text>
+    <text x="38" y="96" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="39" font-weight="760" fill="#152033">一套键鼠，自然切换多台电脑</text>
+    <text x="38" y="132" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" fill="#6c788e">不同网络也可以建立连接，无需公网 IP、端口映射或同一 Wi‑Fi。</text>
+    <text x="38" y="157" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" fill="#6c788e">鼠标推过屏幕边缘即可切换，键盘自动跟随当前电脑。</text>
+
+    <g transform="translate(38 187)" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#526079">
+      <rect width="116" height="30" rx="15" fill="#f8fafe" stroke="#dfe6f0"/><text x="15" y="20">公网直连 / 中继</text>
+      <rect x="126" width="112" height="30" rx="15" fill="#f8fafe" stroke="#dfe6f0"/><text x="143" y="20">低延迟鼠标</text>
+      <rect x="248" width="90" height="30" rx="15" fill="#f8fafe" stroke="#dfe6f0"/><text x="268" y="20">键盘跟随</text>
+      <rect x="348" width="110" height="30" rx="15" fill="#f8fafe" stroke="#dfe6f0"/><text x="367" y="20">加密连接密钥</text>
+    </g>
+
+    <g transform="translate(825 62)">
+      <rect x="0" y="4" width="140" height="88" rx="11" fill="#f8fbff" stroke="#ccd7e6"/>
+      <text x="43" y="52" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#5e6c82">主控电脑</text>
+      <line x1="70" y1="92" x2="70" y2="113" stroke="#bdc9d9" stroke-width="4"/>
+      <line x1="45" y1="113" x2="95" y2="113" stroke="#bdc9d9" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="126" cy="18" r="4" fill="#28b486"/>
+
+      <circle cx="166" cy="70" r="22" fill="#1f63d7"/><text x="157" y="77" font-family="Segoe UI, sans-serif" font-size="22" font-weight="700" fill="#fff">→</text>
+
+      <rect x="192" y="24" width="140" height="88" rx="11" fill="#eff6ff" stroke="#b9cdf0"/>
+      <text x="235" y="72" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#5e6c82">被控电脑</text>
+      <line x1="262" y1="112" x2="262" y2="133" stroke="#bdc9d9" stroke-width="4"/>
+      <line x1="237" y1="133" x2="287" y2="133" stroke="#bdc9d9" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="318" cy="38" r="4" fill="#28b486"/>
+    </g>
+  </g>
+
+  <g transform="translate(88 366)">
+    <rect width="1224" height="178" rx="20" fill="#fff" stroke="#e0e7f0" filter="url(#shadow)"/>
+    <text x="28" y="37" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="800" letter-spacing="2" fill="#2463d4">主控电脑</text>
+    <text x="28" y="70" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="23" font-weight="700" fill="#172033">连接另一台电脑</text>
+    <text x="28" y="94" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" fill="#7e899d">粘贴被控电脑生成的连接密钥，无需填写 IP、端口或路由器配置。</text>
+    <rect x="28" y="112" width="934" height="46" rx="10" fill="#fbfcfe" stroke="#d8e0eb"/>
+    <text x="45" y="140" font-family="Cascadia Mono, monospace" font-size="11" fill="#9aa5b6">SFAI1-eyJ2ZXJzaW9uIjoxLCJlbmRwb2ludElkIjoiLi4u</text>
+    <rect x="976" y="112" width="218" height="46" rx="10" fill="#2669d3"/>
+    <text x="1039" y="141" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700" fill="#fff">建立连接</text>
+  </g>
+
+  <g transform="translate(88 566)">
+    <rect width="1224" height="188" rx="20" fill="#fff" stroke="#e0e7f0" filter="url(#shadow)"/>
+    <text x="28" y="36" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="800" letter-spacing="2" fill="#2463d4">设备</text>
+    <text x="28" y="68" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="23" font-weight="700" fill="#172033">已连接电脑</text>
+    <rect x="1108" y="27" width="72" height="28" rx="14" fill="#f1f4f8"/>
+    <text x="1131" y="46" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="700" fill="#6a768a">1 台</text>
+
+    <rect x="28" y="87" width="1166" height="78" rx="14" fill="#fcfdff" stroke="#dfe6ef"/>
+    <rect x="46" y="104" width="44" height="44" rx="12" fill="#eef4ff"/>
+    <rect x="56" y="113" width="24" height="17" rx="3" fill="none" stroke="#2563d6" stroke-width="2"/>
+    <line x1="68" y1="130" x2="68" y2="138" stroke="#2563d6" stroke-width="2"/>
+    <line x1="61" y1="138" x2="75" y2="138" stroke="#2563d6" stroke-width="2" stroke-linecap="round"/>
+    <text x="106" y="121" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700" fill="#263149">Office-PC-02</text>
+    <rect x="205" y="105" width="64" height="23" rx="11" fill="#eaf8f3"/>
+    <circle cx="218" cy="116.5" r="3" fill="#22ad7e"/>
+    <text x="227" y="120" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="700" fill="#19825f">可控制</text>
+    <text x="106" y="143" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#8792a4">Windows · 1 个屏幕 · 加密连接</text>
+
+    <text x="626" y="116" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" fill="#3d4960">屏幕位置</text>
+    <g transform="translate(720 101)" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#5b687e">
+      <rect width="84" height="34" rx="8" fill="#fff" stroke="#d5deea"/><text x="20" y="22">← 左侧</text>
+      <rect x="92" width="84" height="34" rx="8" fill="#f7fbff" stroke="#9cb7de"/><text x="111" y="22" fill="#245eb8">右侧 →</text>
+      <rect x="184" width="84" height="34" rx="8" fill="#fff" stroke="#d5deea"/><text x="205" y="22">↑ 上方</text>
+      <rect x="276" width="84" height="34" rx="8" fill="#fff" stroke="#d5deea"/><text x="297" y="22">↓ 下方</text>
+    </g>
+  </g>
+
+  <text x="88" y="791" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11" fill="#8c97a9">界面预览 · Native Alpha</text>
+</svg>

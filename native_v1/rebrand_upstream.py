@@ -34,20 +34,6 @@ def replace_text(path: Path, replacements: list[tuple[str, str]]) -> None:
 
 def patch_pair_code(lib_rs: Path) -> None:
     text = lib_rs.read_text(encoding="utf-8")
-    old_pattern = re.compile(
-        r"fn random_pairing_code\(\) -> String \{\n"
-        r"\s*let rng = SystemRandom::new\(\);\n"
-        r"\s*let mut bytes = \[0_u8; 4\];\n"
-        r"\s*if rng\.fill\(&mut bytes\)\.is_err\(\) \{\n"
-        r"\s*bytes = now_ms\(\)\.to_le_bytes\(\)\[\.\.4\]\.try_into\(\)\.unwrap_or\(\[0; 4\]\);\n"
-        r"\s*\}\n"
-        r"\s*format!\(\"\{:\\?06\}\".*?\n"
-        r"\}",
-        re.DOTALL,
-    )
-    # Keep this replacement deliberately simple and guarded. Upstream currently
-    # uses a 6 digit numeric challenge. If upstream changes the function, fail
-    # loudly instead of silently shipping an unexpected pairing format.
     start = text.find("fn random_pairing_code() -> String {")
     if start < 0:
         raise RuntimeError("upstream random_pairing_code() not found")
@@ -61,8 +47,7 @@ def patch_pair_code(lib_rs: Path) -> None:
 
     new_function = r'''fn random_pairing_code() -> String {
     // Human-facing pairing code: 12 unambiguous base32 characters grouped as
-    // XXXX-XXXX-XXXX.  This is ~60 bits of entropy and intentionally avoids
-    // confusing O/0/I/1 characters.
+    // XXXX-XXXX-XXXX. This is roughly 60 bits of entropy and avoids O/0/I/1.
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let rng = SystemRandom::new();
     let mut bytes = [0_u8; 12];
@@ -109,7 +94,6 @@ def main() -> None:
     for window in windows:
         window["title"] = PRODUCT_TITLE
     bundle = tauri.setdefault("bundle", {})
-    # Alpha installers should not depend on an updater private signing key.
     bundle["createUpdaterArtifacts"] = False
     updater = tauri.setdefault("plugins", {}).get("updater")
     if isinstance(updater, dict):
@@ -126,52 +110,43 @@ def main() -> None:
     cargo_path = root / "src-tauri" / "Cargo.toml"
     cargo = cargo_path.read_text(encoding="utf-8")
     cargo = re.sub(r'(?m)^version = "[^"]+"$', f'version = "{version}"', cargo, count=1)
-    cargo = cargo.replace('description = "A cross-platform software KVM prototype"',
-                          'description = "ShifanAI cross-platform software KVM"')
-    cargo = cargo.replace('repository = "https://github.com/XxMinor/mykvm"',
-                          f'repository = "{repo_url}"')
+    cargo = cargo.replace(
+        'description = "A cross-platform software KVM prototype"',
+        'description = "ShifanAI cross-platform software KVM"',
+    )
+    cargo = cargo.replace(
+        'repository = "https://github.com/XxMinor/mykvm"',
+        f'repository = "{repo_url}"',
+    )
     cargo_path.write_text(cargo, encoding="utf-8")
 
-    # Visible frontend branding only. Keep protocol markers / local storage keys
-    # named mykvm for wire compatibility with the pinned, audited core.
+    # Rebrand user-visible UI only. Internal protocol/local-storage identifiers
+    # remain unchanged so the pinned native core stays internally consistent.
     for relative in ["src/App.tsx", "src/i18n.ts", "index.html"]:
         replace_text(root / relative, [("MyKVM", PRODUCT_TITLE)])
 
-    # Product-facing URLs and labels in the Rust/Tauri shell.
     replace_text(
         root / "src-tauri" / "src" / "lib.rs",
-        [
-            (UPSTREAM_REPO, repo_url),
-            (UPSTREAM_REPO + "/releases/latest", repo_url + "/releases/latest"),
-        ],
+        [(UPSTREAM_REPO, repo_url)],
     )
     replace_text(
         root / "src-tauri" / "nsis-hooks.nsh",
         [("MyKVM", "ShifanAI Host Share")],
     )
-
-    constants = root / "src" / "constants.ts"
     replace_text(
-        constants,
-        [
-            (UPSTREAM_REPO, repo_url),
-            ("0.1.0", version),
-        ],
+        root / "src" / "constants.ts",
+        [(UPSTREAM_REPO, repo_url)],
     )
 
-    # Product requirement: human-readable 12-character pairing code.
     patch_pair_code(root / "src-tauri" / "src" / "lib.rs")
-
-    # Give users more time to walk between two physical computers during pairing.
     replace_text(
         root / "src-tauri" / "src" / "lib.rs",
         [("const PAIRING_CODE_TTL_MS: u64 = 60_000;", "const PAIRING_CODE_TTL_MS: u64 = 180_000;")],
     )
 
-    print(f"Rebranded native core at {root}")
-    print(f"Product: {PRODUCT_TITLE}")
-    print(f"Version: {version}")
-    print(f"Repository: {repo_url}")
+    # Keep CI output ASCII-only because Git-Bash Python on some Windows runners
+    # can inherit a cp1252 stdout encoding even though all source files are UTF-8.
+    print(f"Native rebrand complete: version={version} repo={args.repo}")
 
 
 if __name__ == "__main__":

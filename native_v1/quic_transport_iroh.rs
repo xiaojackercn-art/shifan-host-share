@@ -95,11 +95,22 @@ fn record_peer_success(health: &HealthMap, key: &str) {
 }
 
 #[derive(Clone)]
+struct LatestDatagram {
+    peer: PeerEndpoint,
+    payload: Vec<u8>,
+    generation: u64,
+    scheduled: bool,
+}
+
+type LatestDatagramMap = Arc<Mutex<HashMap<String, LatestDatagram>>>;
+
+#[derive(Clone)]
 pub struct TransportHandle {
     commands: tokio_mpsc::UnboundedSender<TransportCommand>,
     port: u16,
     public_key: String,
     peer_health: HealthMap,
+    latest_datagrams: LatestDatagramMap,
 }
 
 impl TransportHandle {
@@ -119,7 +130,7 @@ impl TransportHandle {
         }
     }
 
-    pub fn send_datagram(&self, peer: PeerEndpoint, payload: Vec<u8>) -> Result<(), String> {
+    fn validate_datagram(&self, peer: &PeerEndpoint, payload: &[u8]) -> Result<String, String> {
         if payload.len() > MAX_DATAGRAM_BYTES {
             return Err(format!("WAN datagram is too large: {} bytes", payload.len()));
         }
@@ -129,14 +140,77 @@ impl TransportHandle {
                 PROTOCOL_VERSION, peer.protocol_version
             ));
         }
-        let key = health_key(&peer);
-        if peer_fast_fail_active(&self.peer_health, key) {
+        let key = health_key(peer).to_string();
+        if peer_fast_fail_active(&self.peer_health, &key) {
             return Err(format!("WAN peer {key} is temporarily unreachable"));
         }
         validate_endpoint_id(&peer.public_key)?;
+        Ok(key)
+    }
+
+    /// Send a control-sensitive datagram without coalescing. Keyboard, buttons,
+    /// wheel and protocol control packets use this path so no state transition is
+    /// intentionally discarded.
+    pub fn send_datagram(&self, peer: PeerEndpoint, payload: Vec<u8>) -> Result<(), String> {
+        self.validate_datagram(&peer, &payload)?;
         self.commands
             .send(TransportCommand::SendDatagram { peer, payload })
             .map_err(|_| "WAN transport is stopped".to_string())
+    }
+
+    /// Mouse motion is state, not a transaction. If the WAN path stalls for a
+    /// moment, replaying every queued historical coordinate creates visible lag
+    /// and a "catch-up" cursor. Keep one pending item per peer and replace it with
+    /// the newest coordinate while a send is in flight. The receiver therefore
+    /// always converges to the current pointer instead of draining stale motion.
+    pub fn send_latest_datagram(
+        &self,
+        peer: PeerEndpoint,
+        payload: Vec<u8>,
+    ) -> Result<(), String> {
+        let key = self.validate_datagram(&peer, &payload)?;
+        let should_schedule = {
+            let mut latest = self
+                .latest_datagrams
+                .lock()
+                .map_err(|_| "WAN realtime queue is unavailable".to_string())?;
+            if let Some(slot) = latest.get_mut(&key) {
+                slot.peer = peer;
+                slot.payload = payload;
+                slot.generation = slot.generation.wrapping_add(1);
+                if slot.scheduled {
+                    false
+                } else {
+                    slot.scheduled = true;
+                    true
+                }
+            } else {
+                latest.insert(
+                    key.clone(),
+                    LatestDatagram {
+                        peer,
+                        payload,
+                        generation: 1,
+                        scheduled: true,
+                    },
+                );
+                true
+            }
+        };
+
+        if should_schedule {
+            if self
+                .commands
+                .send(TransportCommand::FlushLatest { key: key.clone() })
+                .is_err()
+            {
+                if let Ok(mut latest) = self.latest_datagrams.lock() {
+                    latest.remove(&key);
+                }
+                return Err("WAN transport is stopped".to_string());
+            }
+        }
+        Ok(())
     }
 
     pub fn probe(&self, peer: PeerEndpoint) -> Result<(), String> {
@@ -205,6 +279,9 @@ enum TransportCommand {
         peer: PeerEndpoint,
         payload: Vec<u8>,
     },
+    FlushLatest {
+        key: String,
+    },
     SendStream {
         peer: PeerEndpoint,
         payload: Vec<u8>,
@@ -229,7 +306,9 @@ pub fn start(
     let (ready_tx, ready_rx) = mpsc::channel();
     let (command_tx, command_rx) = tokio_mpsc::unbounded_channel();
     let peer_health: HealthMap = Arc::new(Mutex::new(HashMap::new()));
+    let latest_datagrams: LatestDatagramMap = Arc::new(Mutex::new(HashMap::new()));
     let loop_health = Arc::clone(&peer_health);
+    let loop_latest = Arc::clone(&latest_datagrams);
 
     thread::Builder::new()
         .name("shifanai-wan-transport".into())
@@ -254,6 +333,7 @@ pub fn start(
                 on_datagram,
                 on_stream,
                 loop_health,
+                loop_latest,
                 ready_tx,
             ));
         })
@@ -268,6 +348,7 @@ pub fn start(
         port: ready.port,
         public_key: ready.public_key,
         peer_health,
+        latest_datagrams,
     })
 }
 
@@ -283,6 +364,7 @@ async fn run_transport(
     on_datagram: DatagramHandler,
     on_stream: StreamHandler,
     health: HealthMap,
+    latest_datagrams: LatestDatagramMap,
     ready_tx: mpsc::Sender<Result<ReadyTransport, String>>,
 ) {
     let endpoint = match Endpoint::builder(presets::N0)
@@ -336,15 +418,42 @@ async fn run_transport(
                 let Some(command) = command else { break; };
                 match command {
                     TransportCommand::SendDatagram { peer, payload } => {
-                        let key = health_key(&peer).to_string();
-                        match ensure_connection(&endpoint, &connections, &peer).await {
-                            Ok(connection) => {
-                                match connection.send_datagram(payload.into()) {
-                                    Ok(()) => record_peer_success(&health, &key),
-                                    Err(error) => record_peer_failure(&health, &key, &error.to_string()),
+                        send_datagram_now(&endpoint, &connections, &health, peer, payload).await;
+                    }
+                    TransportCommand::FlushLatest { key } => {
+                        // If the path is reconnecting, new mouse events keep replacing the
+                        // same slot. Once the connection is usable we send the newest state,
+                        // not every coordinate accumulated while waiting.
+                        loop {
+                            let snapshot = latest_datagrams
+                                .lock()
+                                .ok()
+                                .and_then(|latest| {
+                                    latest.get(&key).map(|slot| {
+                                        (slot.peer.clone(), slot.payload.clone(), slot.generation)
+                                    })
+                                });
+                            let Some((peer, payload, generation)) = snapshot else {
+                                break;
+                            };
+
+                            send_datagram_now(&endpoint, &connections, &health, peer, payload).await;
+
+                            let complete = if let Ok(mut latest) = latest_datagrams.lock() {
+                                match latest.get(&key) {
+                                    Some(slot) if slot.generation == generation => {
+                                        latest.remove(&key);
+                                        true
+                                    }
+                                    Some(_) => false,
+                                    None => true,
                                 }
+                            } else {
+                                true
+                            };
+                            if complete {
+                                break;
                             }
-                            Err(error) => record_peer_failure(&health, &key, &error),
                         }
                     }
                     TransportCommand::Probe { peer, result } => {
@@ -392,6 +501,23 @@ async fn run_transport(
                 }
             }
         }
+    }
+}
+
+async fn send_datagram_now(
+    endpoint: &Endpoint,
+    connections: &ConnectionMap,
+    health: &HealthMap,
+    peer: PeerEndpoint,
+    payload: Vec<u8>,
+) {
+    let key = health_key(&peer).to_string();
+    match ensure_connection(endpoint, connections, &peer).await {
+        Ok(connection) => match connection.send_datagram(payload.into()) {
+            Ok(()) => record_peer_success(health, &key),
+            Err(error) => record_peer_failure(health, &key, &error.to_string()),
+        },
+        Err(error) => record_peer_failure(health, &key, &error),
     }
 }
 

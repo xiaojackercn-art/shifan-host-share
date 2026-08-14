@@ -2,7 +2,7 @@ name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic, main]
+    branches: [v1-native-quic, v1-wan-key, main]
     paths:
       - "native_v1/**"
       - ".github/workflows/build-v1-native.yml"
@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="视饭AI:主机共享 Native Alpha。首次启动只需选择主控电脑/被控电脑；主控端通过局域网自动查找另一台，不需要填写 IP 或 24800 端口。键鼠与剪贴板使用原生 QUIC/TLS 通道。配对码格式 XXXX-XXXX-XXXX。安装包和应用窗口统一使用指定的视饭AI图标。"
+          notes="视饭AI:主机共享 Native Alpha 跨网络版。被控电脑生成一个 SFAI1- 连接密钥，主控电脑粘贴即可连接；无需同一局域网、无需 IP/端口/路由器端口映射。传输使用 Iroh/QUIC，优先点对点直连，网络条件不允许时通过中继建立连接。安装包、应用、任务栏/托盘统一使用指定视饭AI图标。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
           else
@@ -77,6 +77,7 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          python native_v1/apply_wan_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
@@ -155,6 +156,7 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          python native_v1/apply_wan_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md

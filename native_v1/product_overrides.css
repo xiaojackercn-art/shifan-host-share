@@ -1,0 +1,335 @@
+/* Product-only visual layer for 视饭AI:主机共享.
+   Keep this file separate from upstream so the native core can be updated safely. */
+
+.app-shell {
+  padding: 16px 22px 22px;
+  gap: 16px;
+  color: #f5f9ff;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(31, 122, 242, 0.14), transparent 28%),
+    linear-gradient(180deg, #071321 0%, #091827 100%);
+}
+
+.app-shell.custom-chrome { padding-top: 0; }
+
+.app-titlebar,
+.app-header,
+.surface-card,
+.layout-panel,
+.loading-panel,
+.onboarding-panel {
+  border-color: #173a5b;
+  background: rgba(10, 29, 47, 0.96);
+}
+
+.app-titlebar {
+  min-height: 36px;
+  background: #07111d;
+  border-bottom-color: rgba(39, 82, 119, 0.55);
+}
+
+.app-header {
+  min-height: 82px;
+  padding: 14px 18px;
+  border: 1px solid #163753;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(13, 36, 58, 0.98), rgba(9, 28, 45, 0.98));
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
+}
+
+.brand-lockup { gap: 13px; }
+.brand-logo {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  object-fit: cover;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+}
+.brand-copy strong { font-size: 20px; letter-spacing: -0.3px; color: #ffffff; }
+.brand-subtitle { margin-top: 4px; color: #87a9c9; font-size: 12px; }
+
+.header-tabs {
+  padding: 4px;
+  border: 1px solid #24445f;
+  border-radius: 13px;
+  background: #0b1b2b;
+}
+.header-tabs button {
+  min-width: 88px;
+  min-height: 38px;
+  border-radius: 9px;
+  color: #9db8d1;
+  font-weight: 700;
+}
+.header-tabs button.active {
+  color: #ffffff;
+  background: #174f88;
+  box-shadow: inset 0 0 0 1px #2f83d8;
+}
+
+.runtime-toggle-button {
+  width: auto;
+  min-width: 120px;
+  height: 44px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 12px;
+  font-weight: 800;
+}
+.runtime-toggle-button.running {
+  border-color: #8d3247;
+  background: #351823;
+  color: #ff8ea8;
+}
+.runtime-toggle-button.stopped {
+  border-color: #2778c7;
+  background: #174f88;
+  color: #ffffff;
+}
+.runtime-toggle-icon { display: inline-flex; align-items: center; }
+.runtime-toggle-icon svg { width: 14px; height: 14px; }
+.runtime-toggle-label { white-space: nowrap; font-size: 13px; }
+
+.onboarding-shell { align-items: stretch; }
+.onboarding-panel {
+  width: min(920px, calc(100vw - 64px));
+  margin: 72px auto 0;
+  padding: 34px;
+  border: 1px solid #1c4569;
+  border-radius: 24px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
+}
+.onboarding-copy { max-width: 740px; }
+.onboarding-copy h1 { font-size: 30px; line-height: 1.25; }
+.onboarding-copy > p:last-child { color: #8eabc6; font-size: 14px; }
+.role-choice-grid { gap: 18px; margin-top: 24px; }
+.role-choice-card {
+  min-height: 190px;
+  padding: 24px;
+  border: 1px solid #244c6e;
+  border-radius: 18px;
+  background: #0b2033;
+  text-align: left;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.role-choice-card:hover {
+  transform: translateY(-2px);
+  border-color: #3d93e8;
+  background: #0e2942;
+}
+.role-choice-card > span {
+  display: inline-flex;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #123a60;
+  color: #69b2ff;
+  font-size: 11px;
+  font-weight: 800;
+}
+.role-choice-card strong { margin-top: 18px; font-size: 21px; color: #fff; }
+.role-choice-card p { margin-top: 8px; color: #9ab4cc; font-size: 14px; line-height: 1.65; }
+
+.page-panel { gap: 16px; }
+.page-heading { padding: 4px 2px 0; }
+.page-heading h1,
+.layout-toolbar h1 { font-size: 24px; color: #ffffff; }
+.page-heading p,
+.layout-toolbar p { color: #85a7c5; }
+.eyebrow { color: #4aa3ff; font-weight: 800; letter-spacing: 0.12em; }
+
+.quick-start-guide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.quick-start-guide > div {
+  position: relative;
+  min-height: 120px;
+  padding: 17px 17px 17px 58px;
+  border: 1px solid #1b4569;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #0d2941, #0a2135);
+}
+.quick-start-guide > div > span {
+  position: absolute;
+  left: 16px;
+  top: 17px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: #1c67ad;
+  color: #fff;
+  font-weight: 900;
+}
+.quick-start-guide strong { display: block; color: #fff; font-size: 14px; }
+.quick-start-guide p { margin: 8px 0 0; color: #8faec8; font-size: 12px; line-height: 1.55; }
+
+.connection-stack { gap: 14px; }
+.surface-card {
+  border: 1px solid #173f60;
+  border-radius: 16px;
+  background: #0a2033;
+  box-shadow: none;
+}
+.connection-add-card {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+}
+.connection-add-card h2 { color: #fff; font-size: 18px; }
+.connection-add-card p { color: #88a9c5; }
+
+/* The normal product flow is discovery-first.  Raw Host/IP fields are deliberately
+   not shown on the main screen; they caused the old builds to feel like a dev tool. */
+.add-device-form input,
+.add-device-form button[type="submit"] { display: none !important; }
+.add-device-form {
+  display: block;
+  min-width: 230px;
+}
+.add-device-form .secondary-button {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 20px;
+  border-color: #2b82d4;
+  background: #1762a7;
+  color: #ffffff;
+  font-weight: 800;
+  box-shadow: 0 8px 22px rgba(13, 83, 148, 0.22);
+}
+.add-device-form .secondary-button:hover:not(:disabled) { background: #1d72bf; }
+
+.connection-list-card { min-height: 280px; }
+.connection-row {
+  border-color: #1a4568;
+  background: #0b2236;
+}
+.connection-row.active {
+  border-color: #2c83d6;
+  background: #0d2b46;
+}
+.connection-title strong { color: #fff; }
+.connection-meta { color: #88a8c4; }
+
+.primary-button {
+  border: 1px solid #2d84d6;
+  background: #1765ad;
+  color: #fff;
+}
+.secondary-button {
+  border-color: #2a4d6b;
+  background: #10293e;
+  color: #c6d9eb;
+}
+.secondary-button:hover:not(:disabled) { background: #153551; }
+
+.client-wait-card {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  padding: 24px;
+  border: 1px solid #21527d;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #0d2d49 0%, #0a2237 72%);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.13);
+}
+.client-wait-dot {
+  width: 12px;
+  height: 12px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: #ff6b7e;
+  box-shadow: 0 0 0 5px rgba(255, 107, 126, 0.1);
+}
+.client-wait-dot.ready {
+  background: #54e5b5;
+  box-shadow: 0 0 0 5px rgba(84, 229, 181, 0.1);
+}
+.client-wait-copy h2 { margin: 4px 0 8px; color: #fff; font-size: 22px; }
+.client-wait-copy p { margin: 0; color: #a5bfd6; line-height: 1.65; }
+.client-wait-copy small { display: block; margin-top: 10px; color: #6f9ac0; }
+.client-wait-status {
+  padding: 7px 10px;
+  border: 1px solid #2a5b80;
+  border-radius: 999px;
+  color: #86d5ff;
+  background: rgba(20, 72, 108, 0.5);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.settings-layout { gap: 14px; }
+.settings-card,
+.modifier-card { background: #0a2033; }
+.settings-card h2,
+.modifier-card h2 { color: #fff; }
+.settings-control-row > span,
+.muted-copy { color: #8ca9c2; }
+.segmented-control,
+.role-switcher button,
+.hotkey-recorder-button,
+.settings-number-input {
+  border-color: #294b68;
+  background: #0d263a;
+  color: #d4e2ef;
+}
+.segmented-control button.active,
+.role-switcher button.active {
+  background: #174f88;
+  color: #fff;
+}
+
+.layout-panel { border-radius: 18px; }
+.layout-board {
+  border-color: #173f60;
+  background: #071a2a;
+}
+.board-grid {
+  opacity: 0.45;
+  background:
+    linear-gradient(90deg, rgba(64, 126, 178, 0.15) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(64, 126, 178, 0.15) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+.screen-rect {
+  background: rgba(21, 71, 111, 0.58);
+  border-color: #2f81c8;
+  color: #fff;
+}
+
+.pairing-modal {
+  border-color: #2b5f87;
+  background: #0b2236;
+}
+.pairing-modal h2 { color: #fff; }
+.pairing-modal p { color: #9bb6ce; }
+.pairing-code,
+.pairing-modal input {
+  letter-spacing: 0.12em;
+  font-weight: 900;
+  color: #fff;
+  background: #071a2a;
+  border-color: #2d6b9e;
+}
+
+.error-dialog {
+  border-color: #7b3043;
+  background: #24141b;
+}
+
+@media (max-width: 1040px) {
+  .quick-start-guide { grid-template-columns: 1fr; }
+  .connection-add-card { grid-template-columns: 1fr; }
+  .add-device-form { min-width: 0; }
+  .client-wait-card { grid-template-columns: 18px 1fr; }
+  .client-wait-status { grid-column: 2; justify-self: start; }
+}

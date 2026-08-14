@@ -2,9 +2,10 @@ name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic, main]
+    branches: [main, v1-native-quic, release/alpha3-input-ui]
     paths:
       - "native_v1/**"
+      - "docs/**"
       - ".github/workflows/build-v1-native.yml"
       - "README.md"
   workflow_dispatch:
@@ -35,18 +36,19 @@ jobs:
           version="$(tr -d '[:space:]' < native_v1/VERSION)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Create or refresh prerelease
+      - name: 创建或更新预发布版本
+        if: github.ref_name == 'main'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          notes="视饭AI:主机共享 Native Alpha。首次启动只需选择主控电脑/被控电脑；主控端通过局域网自动查找另一台，不需要填写 IP 或 24800 端口。键鼠与剪贴板使用原生 QUIC/TLS 通道。配对码格式 XXXX-XXXX-XXXX。安装包和应用窗口统一使用指定的视饭AI图标。"
+          notes="视饭AI：主机共享 ${TAG}。本版本重点优化 Windows 双机键鼠体验：降低远端鼠标处理开销、提高鼠标发送节奏、拆分键盘与高频鼠标状态锁、增强扫描码键盘注入，并修复 Windows 输入服务内部标识被品牌替换的问题。Windows 安装程序固定使用简体中文界面，同时更新桌面 UI、使用说明和真机验收规范。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI：主机共享 $TAG" --notes "$notes" --prerelease
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI：主机共享 $TAG" --notes "$notes" --prerelease
           fi
 
   windows:
@@ -61,14 +63,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare exact product icon
+
+      - name: 准备产品图标
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check pillow
           python native_v1/materialize_icon_fallback.py assets/icon-source.png
           python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
-          if (!(Test-Path assets/AI.png)) { throw "Specified product icon was not generated" }
-      - name: Prepare pinned native source
+          if (!(Test-Path assets/AI.png)) { throw "产品图标生成失败" }
+
+      - name: 准备固定版本原生源码
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
@@ -77,38 +81,48 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          python native_v1/harden_native.py native-upstream
           mkdir -p native-upstream/public
-          cp assets/AI.png native-upstream/public/app-icon.png
+          cp assets/icon-source.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
-      - name: Install dependencies and generate native icons
+
+      - name: 安装依赖并生成原生图标
         working-directory: native-upstream
         shell: pwsh
         run: |
           npm ci
           npm exec -- tauri icon "$env:GITHUB_WORKSPACE/assets/AI.png"
-      - name: Verify source
+
+      - name: 编译检查
         working-directory: native-upstream
         shell: pwsh
         run: |
           npm run build
           cargo check --manifest-path src-tauri/Cargo.toml
-      - name: Build Windows installer
+
+      - name: 生成 Windows 中文安装包
         working-directory: native-upstream
         shell: pwsh
         run: npm exec -- tauri build --bundles nsis
-      - name: Collect and upload Windows installer
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.tag }}
+
+      - name: 收集 Windows 安装包并准备构建产物
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           $installer = Get-ChildItem "native-upstream/src-tauri/target/release/bundle/nsis" -Filter *.exe -Recurse | Select-Object -First 1
-          if (-not $installer) { throw "NSIS installer not found" }
+          if (-not $installer) { throw "未找到 NSIS 安装包" }
           $out = "out/ShifanAI-HostShare-Windows-x64-Setup.exe"
           Copy-Item $installer.FullName $out
           Get-FileHash $out -Algorithm SHA256 | Format-List
-          gh release upload $env:TAG $out --clobber --repo $env:GITHUB_REPOSITORY
+
+      - name: 上传 Windows 安装包到预发布
+        if: github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: pwsh
+        run: gh release upload $env:TAG out/ShifanAI-HostShare-Windows-x64-Setup.exe --clobber --repo $env:GITHUB_REPOSITORY
+
       - uses: actions/upload-artifact@v4
         with:
           name: ShifanAI-HostShare-Windows-x64
@@ -138,7 +152,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Prepare exact product icon
+
+      - name: 准备产品图标
         shell: bash
         run: |
           set -euo pipefail
@@ -146,7 +161,8 @@ jobs:
           python native_v1/materialize_icon_fallback.py assets/icon-source.png
           python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
           test -f assets/AI.png
-      - name: Prepare pinned native source
+
+      - name: 准备固定版本原生源码
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
@@ -155,33 +171,36 @@ jobs:
           git clone --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" native-upstream
           git -C native-upstream checkout "$UPSTREAM_SHA"
           python native_v1/rebrand_upstream.py native-upstream --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          python native_v1/harden_native.py native-upstream
           mkdir -p native-upstream/public
-          cp assets/AI.png native-upstream/public/app-icon.png
+          cp assets/icon-source.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
-      - name: Install dependencies and generate native icons
+
+      - name: 安装依赖并生成原生图标
         working-directory: native-upstream
         shell: bash
         run: |
           set -euo pipefail
           npm ci
           npm exec -- tauri icon "$GITHUB_WORKSPACE/assets/AI.png"
-      - name: Verify source
+
+      - name: 编译检查
         working-directory: native-upstream
         shell: bash
         run: |
           set -euo pipefail
           npm run build
           cargo check --manifest-path src-tauri/Cargo.toml --target "${{ matrix.target }}"
-      - name: Build macOS DMG
+
+      - name: 生成 macOS 安装包
         working-directory: native-upstream
         shell: bash
         run: |
           set -euo pipefail
           npm exec -- tauri build --target "${{ matrix.target }}" --bundles app,dmg --no-sign
-      - name: Collect and upload macOS package
+
+      - name: 收集 macOS 安装包
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.tag }}
           TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
         shell: bash
@@ -192,7 +211,16 @@ jobs:
           test -n "$dmg"
           cp "$dmg" "out/$ASSET"
           shasum -a 256 "out/$ASSET"
-          gh release upload "$TAG" "out/$ASSET" --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: 上传 macOS 安装包到预发布
+        if: github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          ASSET: ${{ matrix.asset }}
+        shell: bash
+        run: gh release upload "$TAG" "out/$ASSET" --clobber --repo "$GITHUB_REPOSITORY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

@@ -204,9 +204,13 @@ fn queue_windows_positioned_packet(
 
     text = replace_once(
         text,
-        '''    input_events: Arc<AtomicU64>,
+        '''    main_window_focused: Arc<AtomicBool>,
+    clipboard_target: Arc<Mutex<Option<ClipboardTarget>>>,
+    input_events: Arc<AtomicU64>,
     targets: Vec<InputTarget>,''',
-        '''    input_events: Arc<AtomicU64>,
+        '''    main_window_focused: Arc<AtomicBool>,
+    clipboard_target: Arc<Mutex<Option<ClipboardTarget>>>,
+    input_events: Arc<AtomicU64>,
     control_tx: mpsc::Sender<WindowsRealtimeEvent>,
     mouse_wake_tx: mpsc::SyncSender<()>,
     latest_mouse: Arc<Mutex<Option<ActiveTarget>>>,
@@ -386,7 +390,7 @@ fn queue_windows_positioned_packet(
         if matches!(&packet.event, InputEvent::Key { .. })
             && !WINDOWS_FIRST_KEY_RECEIVED.swap(true, Ordering::Relaxed)
         {
-            log::info!("[diag] first remote keyboard event received and authorized for dispatch");
+            log::info!("[diag] first remote keyboard event reached receiver");
         }
         let command = {'''
     text = replace_once(text, old_receive, new_receive, "keyboard receive diagnostic")

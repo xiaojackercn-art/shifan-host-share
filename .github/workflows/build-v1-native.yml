@@ -2,7 +2,7 @@ name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic, v1-wan-key, v1-wan-reliability, main]
+    branches: [v1-native-quic, v1-wan-key, v1-wan-reliability, v1-alpha6-input-polish, main]
     paths:
       - "native_v1/**"
       - ".github/workflows/build-v1-native.yml"
@@ -20,6 +20,7 @@ concurrency:
 env:
   UPSTREAM_REPO: XxMinor/mykvm
   UPSTREAM_SHA: a2ea4164861de31b562c8417eeb7879dbc8c23cb
+  PRODUCT_LOGO_URL: https://i.ibb.co/nMzmgBR7/AI.png
 
 jobs:
   prepare:
@@ -43,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="视饭AI:主机共享 Native Alpha 跨网络版。本版本修复公网地址发现不完整导致的 No addressing information available：连接密钥升级为 v2，在公网中继真正就绪后才生成，并携带 Iroh 中继/直连地址；主控端优先使用密钥内显式地址连接，不再只依赖 EndpointId 地址查询；重新生成连接密钥会真正轮换授权密钥并使旧密钥失效。保留 250Hz 鼠标最新坐标合并、Windows 键盘扫描码注入和中文安装界面。"
+          notes="视饭AI:主机共享 Native Alpha 6。修复重新生成密钥实际未轮换的问题：密钥授权改由 Rust 后端原子轮换，旧密钥立即撤销；Windows 键盘改为标准虚拟键优先、扫描码回退，解决鼠标可用但键盘无响应；鼠标采样提升到 1ms 并增加直连优先拨号，降低输入延迟；安装程序、应用窗口、任务栏、托盘与页面统一使用产品 Logo，并进一步优化页面细节。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
           else
@@ -66,7 +67,12 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check pillow
-          python native_v1/materialize_icon_fallback.py assets/icon-source.png
+          New-Item -ItemType Directory -Force assets | Out-Null
+          curl.exe -fL --retry 3 --connect-timeout 10 "$env:PRODUCT_LOGO_URL" -o assets/icon-source.png
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path assets/icon-source.png)) {
+            Remove-Item assets/icon-source.png -ErrorAction SilentlyContinue
+            python native_v1/materialize_icon_fallback.py assets/icon-source.png
+          }
           python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
           if (!(Test-Path assets/AI.png)) { throw "Product icon was not generated" }
       - name: Prepare pinned native source
@@ -81,6 +87,7 @@ jobs:
           python native_v1/apply_wan_overlay.py native-upstream
           python native_v1/apply_input_quality_overlay.py native-upstream
           python native_v1/apply_wan_reliability_overlay.py native-upstream
+          python native_v1/apply_alpha6_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
@@ -160,7 +167,11 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check pillow
-          python native_v1/materialize_icon_fallback.py assets/icon-source.png
+          mkdir -p assets
+          if ! curl -fL --retry 3 --connect-timeout 10 "$PRODUCT_LOGO_URL" -o assets/icon-source.png; then
+            rm -f assets/icon-source.png
+            python native_v1/materialize_icon_fallback.py assets/icon-source.png
+          fi
           python native_v1/prepare_icon.py assets/icon-source.png assets/AI.png
           test -f assets/AI.png
       - name: Prepare pinned native source
@@ -175,6 +186,7 @@ jobs:
           python native_v1/apply_wan_overlay.py native-upstream
           python native_v1/apply_input_quality_overlay.py native-upstream
           python native_v1/apply_wan_reliability_overlay.py native-upstream
+          python native_v1/apply_alpha6_overlay.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md

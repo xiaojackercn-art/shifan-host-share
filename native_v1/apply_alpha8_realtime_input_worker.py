@@ -50,16 +50,25 @@ static WINDOWS_FIRST_KEY_SENT: AtomicBool = AtomicBool::new(false);
 static WINDOWS_FIRST_KEY_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
+fn set_current_thread_input_priority() {
+    unsafe {
+        let _ = windows_sys::Win32::System::Threading::SetThreadPriority(
+            windows_sys::Win32::System::Threading::GetCurrentThread(),
+            windows_sys::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn start_windows_control_worker(
-    quic_transport: quic_transport::TransportHandle,
-    layout_state: Arc<Mutex<LayoutState>>,
-    input_events: Arc<AtomicU64>,
+    context: Arc<WindowsCaptureContext>,
     stop: Arc<AtomicBool>,
     receiver: mpsc::Receiver<WindowsRealtimeEvent>,
 ) {
     let _ = thread::Builder::new()
         .name("shifanai-control-input".into())
         .spawn(move || {
+            set_current_thread_input_priority();
             while !stop.load(Ordering::Relaxed) {
                 let item = match receiver.recv_timeout(Duration::from_millis(100)) {
                     Ok(item) => item,
@@ -75,11 +84,11 @@ fn start_windows_control_worker(
                             log::info!("[diag] first Windows keyboard event left capture worker");
                         }
                         if !send_packet(
-                            &quic_transport,
+                            &context.quic_transport,
                             &target,
                             event,
-                            &layout_state,
-                            &input_events,
+                            &context.layout_state,
+                            &context.input_events,
                         ) {
                             log::debug!("Windows realtime control packet send missed");
                         }
@@ -89,17 +98,17 @@ fn start_windows_control_worker(
                         // mouse state immediately before it from this control worker so the
                         // hook thread never blocks on network work.
                         let _ = send_remote_mouse_move(
-                            &quic_transport,
+                            &context.quic_transport,
                             &active,
-                            &layout_state,
-                            &input_events,
+                            &context.layout_state,
+                            &context.input_events,
                         );
                         if !send_packet(
-                            &quic_transport,
+                            &context.quic_transport,
                             &active.target,
                             event,
-                            &layout_state,
-                            &input_events,
+                            &context.layout_state,
+                            &context.input_events,
                         ) {
                             log::debug!("Windows positioned control packet send missed");
                         }
@@ -111,17 +120,14 @@ fn start_windows_control_worker(
 
 #[cfg(target_os = "windows")]
 fn start_windows_mouse_worker(
-    quic_transport: quic_transport::TransportHandle,
-    layout_state: Arc<Mutex<LayoutState>>,
-    input_events: Arc<AtomicU64>,
+    context: Arc<WindowsCaptureContext>,
     stop: Arc<AtomicBool>,
-    remote_active: Arc<AtomicBool>,
-    latest_mouse: Arc<Mutex<Option<ActiveTarget>>>,
     receiver: mpsc::Receiver<()>,
 ) {
     let _ = thread::Builder::new()
         .name("shifanai-mouse-input".into())
         .spawn(move || {
+            set_current_thread_input_priority();
             while !stop.load(Ordering::Relaxed) {
                 match receiver.recv_timeout(Duration::from_millis(100)) {
                     Ok(()) => {}
@@ -129,26 +135,27 @@ fn start_windows_mouse_worker(
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
 
-                let latest = latest_mouse
+                if !context.remote_active.load(Ordering::Relaxed) {
+                    continue;
+                }
+                // The hook never clones the target and never serializes a packet.
+                // The worker samples the current shared ActiveTarget only when the
+                // one-slot wake queue says fresh movement exists. If many physical
+                // events arrive during one send, they collapse into the newest state.
+                let latest = context
+                    .active
                     .lock()
                     .ok()
-                    .and_then(|mut slot| slot.take());
+                    .and_then(|active| active.as_ref().cloned());
                 let Some(active) = latest else {
                     continue;
                 };
-                if !remote_active.load(Ordering::Relaxed) {
-                    continue;
-                }
 
-                // The producer throttles to 500 Hz and this queue has capacity one.
-                // While a send is in flight, newer hook events overwrite latest_mouse;
-                // the next token therefore sends only the newest coordinate, never an
-                // accumulated trajectory that has to catch up later.
                 if !send_remote_mouse_move(
-                    &quic_transport,
+                    &context.quic_transport,
                     &active,
-                    &layout_state,
-                    &input_events,
+                    &context.layout_state,
+                    &context.input_events,
                 ) {
                     log::debug!("Windows realtime mouse packet send missed");
                 }
@@ -157,13 +164,7 @@ fn start_windows_mouse_worker(
 }
 
 #[cfg(target_os = "windows")]
-fn queue_windows_mouse_move(context: &WindowsCaptureContext, active: &ActiveTarget) -> bool {
-    let Ok(mut latest) = context.latest_mouse.lock() else {
-        return false;
-    };
-    *latest = Some(active.clone());
-    drop(latest);
-
+fn queue_windows_mouse_move(context: &WindowsCaptureContext) -> bool {
     match context.mouse_wake_tx.try_send(()) {
         Ok(()) | Err(mpsc::TrySendError::Full(())) => true,
         Err(mpsc::TrySendError::Disconnected(())) => false,
@@ -213,7 +214,6 @@ fn queue_windows_positioned_packet(
     input_events: Arc<AtomicU64>,
     control_tx: mpsc::Sender<WindowsRealtimeEvent>,
     mouse_wake_tx: mpsc::SyncSender<()>,
-    latest_mouse: Arc<Mutex<Option<ActiveTarget>>>,
     targets: Vec<InputTarget>,''',
         "Windows capture realtime queue fields",
     )
@@ -232,36 +232,11 @@ fn queue_windows_positioned_packet(
     new_context = '''        refresh_windows_input_desktop_cache();
 
         // The Windows low-level hook thread must do almost no work. It owns the
-        // system message loop; serialization, QUIC and SendInput-side scheduling
-        // are deliberately moved to two independent realtime workers so high-rate
-        // mouse traffic can never starve keyboard transitions.
+        // system message loop; serialization and QUIC are deliberately moved to
+        // two independent realtime workers so high-rate mouse traffic can never
+        // starve keyboard transitions.
         let (control_tx, control_rx) = mpsc::channel::<WindowsRealtimeEvent>();
         let (mouse_wake_tx, mouse_wake_rx) = mpsc::sync_channel::<()>(1);
-        let latest_mouse = Arc::new(Mutex::new(None));
-        start_windows_control_worker(
-            quic_transport.clone(),
-            Arc::clone(&layout_state),
-            Arc::clone(&input_events),
-            Arc::clone(&stop),
-            control_rx,
-        );
-        start_windows_mouse_worker(
-            quic_transport.clone(),
-            Arc::clone(&layout_state),
-            Arc::clone(&input_events),
-            Arc::clone(&stop),
-            Arc::clone(&remote_active),
-            Arc::clone(&latest_mouse),
-            mouse_wake_rx,
-        );
-
-        unsafe {
-            let _ = windows_sys::Win32::System::Threading::SetThreadPriority(
-                windows_sys::Win32::System::Threading::GetCurrentThread(),
-                windows_sys::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
-            );
-        }
-
         let context = Arc::new(WindowsCaptureContext {
             quic_transport,
             layout_state,
@@ -273,9 +248,23 @@ fn queue_windows_positioned_packet(
             input_events,
             control_tx,
             mouse_wake_tx,
-            latest_mouse,
             targets,'''
-    text = replace_once(text, old_context, new_context, "start Windows realtime workers before hooks")
+    text = replace_once(text, old_context, new_context, "create Windows realtime queues")
+
+    context_tail = '''            just_crossed: AtomicBool::new(false),
+            local_screen_points: Mutex::new(HashMap::new()),
+        });
+
+        if let Ok(mut current) = WINDOWS_CAPTURE_CONTEXT.lock() {'''
+    context_tail_replacement = '''            just_crossed: AtomicBool::new(false),
+            local_screen_points: Mutex::new(HashMap::new()),
+        });
+        start_windows_control_worker(Arc::clone(&context), Arc::clone(&stop), control_rx);
+        start_windows_mouse_worker(Arc::clone(&context), Arc::clone(&stop), mouse_wake_rx);
+        set_current_thread_input_priority();
+
+        if let Ok(mut current) = WINDOWS_CAPTURE_CONTEXT.lock() {'''
+    text = replace_once(text, context_tail, context_tail_replacement, "start Windows workers before hooks")
 
     # Work only inside the Windows hook/handler section; macOS keeps its existing
     # CGEventTap behavior.
@@ -309,7 +298,7 @@ fn queue_windows_positioned_packet(
                 &context.layout_state,
                 &context.input_events,
             ) {'''
-    new_active_mouse = '''            if !queue_windows_mouse_move(context, active_target) {'''
+    new_active_mouse = '''            if !queue_windows_mouse_move(context) {'''
     win = replace_once(win, old_active_mouse, new_active_mouse, "active mouse move queues without network")
 
     old_cross_mouse = '''        if !send_remote_mouse_move(
@@ -318,7 +307,7 @@ fn queue_windows_positioned_packet(
             &context.layout_state,
             &context.input_events,
         ) {'''
-    new_cross_mouse = '''        if !queue_windows_mouse_move(context, &active_target) {'''
+    new_cross_mouse = '''        if !queue_windows_mouse_move(context) {'''
     win = replace_once(win, old_cross_mouse, new_cross_mouse, "crossing mouse move queues without network")
 
     old_button_tail = '''    if !send_remote_mouse_move(

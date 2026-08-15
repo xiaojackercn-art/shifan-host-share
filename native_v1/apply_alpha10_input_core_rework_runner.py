@@ -55,8 +55,34 @@ def patch_windows_injection_final(root: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def patch_frontend_final(root: Path) -> None:
+    path = root / "src" / "App.tsx"
+    text = path.read_text(encoding="utf-8")
+
+    # WAN reliability replaced the old one-shot refreshKey effect with a retrying
+    # readiness poll. Alpha10 only needs a stable insertion marker; temporarily
+    # insert the old marker before chooseRole, let the regular overlay add the
+    # diagnostics effect, then remove the redundant one-shot refresh again.
+    old_effect = '''  useEffect(() => {
+    void refreshKey()
+  }, [refreshKey])
+
+'''
+    choose_role = '''  async function chooseRole(nextRole: MachineRole) {'''
+    text = replace_first(text, choose_role, old_effect + choose_role, "temporary frontend diagnostics insertion marker")
+    path.write_text(text, encoding="utf-8")
+
+    overlay.patch_frontend_original(root)
+
+    text = path.read_text(encoding="utf-8")
+    text = replace_first(text, old_effect, "", "remove redundant one-shot key refresh")
+    path.write_text(text, encoding="utf-8")
+
+
 overlay.replace_once = replace_first
 overlay.patch_windows_injection = patch_windows_injection_final
+overlay.patch_frontend_original = overlay.patch_frontend
+overlay.patch_frontend = patch_frontend_final
 
 if __name__ == "__main__":
     overlay.main()

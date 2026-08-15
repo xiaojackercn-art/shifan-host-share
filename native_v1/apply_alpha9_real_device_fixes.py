@@ -133,6 +133,21 @@ def patch_transport(root: Path) -> None:
         "log explicit relay fallback",
     )
 
+    # Import/probe must not blindly reuse an old cached relay-capable connection.
+    # Force one fresh route decision using the just-imported direct candidates;
+    # ensure_connection will cache whichever direct-first/fallback path wins.
+    old_probe = '''                    TransportCommand::Probe { peer, result } => {
+                        let key = health_key(&peer).to_string();
+                        let outcome = ensure_connection(&endpoint, &connections, &peer).await.map(|_| ());'''
+    new_probe = '''                    TransportCommand::Probe { peer, result } => {
+                        let key = health_key(&peer).to_string();
+                        if let Ok(mut live) = connections.lock() {
+                            live.remove(&key);
+                        }
+                        log::info!("WAN probe for {key} is forcing a fresh direct-first route decision");
+                        let outcome = ensure_connection(&endpoint, &connections, &peer).await.map(|_| ());'''
+    text = replace_once(text, old_probe, new_probe, "probe forces fresh direct-first connection selection")
+
     path.write_text(text, encoding="utf-8")
 
 

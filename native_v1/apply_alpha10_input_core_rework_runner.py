@@ -13,6 +13,69 @@ def replace_first(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def patch_input_final(root: Path) -> None:
+    overlay.patch_input_original(root)
+    path = root / "src-tauri" / "src" / "input.rs"
+    text = path.read_text(encoding="utf-8")
+
+    # Never wake the mouse worker with an old snapshot. If the worker owns the
+    # tiny snapshot lock at this exact instant, skip only this replaceable
+    # physical move; the next move will publish the newest state.
+    old_mouse = '''fn queue_windows_mouse_move(context: &WindowsCaptureContext, active: &ActiveTarget) -> bool {
+    DIAG_MOUSE_CAPTURED.fetch_add(1, Ordering::Relaxed);
+    match context.mouse_snapshot.try_lock() {
+        Ok(mut snapshot) => *snapshot = Some(active.clone()),
+        Err(_) => {
+            // The worker only holds this independent snapshot long enough to clone
+            // it. Missing one overwrite is harmless because the one-slot wake stays
+            // live and the next physical event replaces it; never block the hook.
+            DIAG_MOUSE_SNAPSHOT_SKIPPED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    match context.mouse_wake_tx.try_send(()) {
+        Ok(()) | Err(mpsc::TrySendError::Full(())) => true,
+        Err(mpsc::TrySendError::Disconnected(())) => false,
+    }
+}'''
+    new_mouse = '''fn queue_windows_mouse_move(context: &WindowsCaptureContext, active: &ActiveTarget) -> bool {
+    DIAG_MOUSE_CAPTURED.fetch_add(1, Ordering::Relaxed);
+    let updated = match context.mouse_snapshot.try_lock() {
+        Ok(mut snapshot) => {
+            *snapshot = Some(active.clone());
+            true
+        }
+        Err(_) => {
+            DIAG_MOUSE_SNAPSHOT_SKIPPED.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    };
+    if !updated {
+        return true;
+    }
+    match context.mouse_wake_tx.try_send(()) {
+        Ok(()) | Err(mpsc::TrySendError::Full(())) => true,
+        Err(mpsc::TrySendError::Disconnected(())) => false,
+    }
+}'''
+    text = replace_first(text, old_mouse, new_mouse, "never wake mouse worker with stale snapshot")
+
+    # The keyboard fallback must not become a new source of mouse-hook stalls.
+    # It samples at 8ms cadence, so skipping one cycle is preferable to waiting
+    # on ActiveTarget while the low-level mouse hook owns it.
+    old_target = '''                let target = context
+                    .active
+                    .lock()
+                    .ok()
+                    .and_then(|active| active.as_ref().map(|active| active.target.clone()));'''
+    new_target = '''                let target = context
+                    .active
+                    .try_lock()
+                    .ok()
+                    .and_then(|active| active.as_ref().map(|active| active.target.clone()));'''
+    text = replace_first(text, old_target, new_target, "keyboard fallback never waits on ActiveTarget")
+    path.write_text(text, encoding="utf-8")
+
+
 def patch_windows_injection_final(root: Path) -> None:
     path = root / "src-tauri" / "src" / "windows_input.rs"
     text = path.read_text(encoding="utf-8")
@@ -80,6 +143,8 @@ def patch_frontend_final(root: Path) -> None:
 
 
 overlay.replace_once = replace_first
+overlay.patch_input_original = overlay.patch_input
+overlay.patch_input = patch_input_final
 overlay.patch_windows_injection = patch_windows_injection_final
 overlay.patch_frontend_original = overlay.patch_frontend
 overlay.patch_frontend = patch_frontend_final

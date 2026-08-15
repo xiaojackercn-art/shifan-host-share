@@ -2,7 +2,7 @@ name: Build ShifanAI Host Share Native
 
 on:
   push:
-    branches: [v1-native-quic, v1-wan-key, v1-wan-reliability, v1-alpha6-input-polish, v1-alpha7-real-input-fix, main]
+    branches: [v1-native-quic, v1-wan-key, v1-wan-reliability, v1-alpha6-input-polish, v1-alpha7-real-input-fix, v1-alpha8-realtime-input-worker, main]
     paths:
       - "native_v1/**"
       - ".github/workflows/build-v1-native.yml"
@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="视饭AI:主机共享 Native Alpha 7。重构实机键鼠链路：连接密钥由后端同时轮换 clusterId 与 pairSecret 并强校验；实时输入在已建立 QUIC 连接上优先直发，减少软件队列延迟；键盘、点击与滚轮每包携带完整授权；Windows 被控端自动申请输入所需权限；安装前清理旧版驻留进程，并在界面显示当前版本便于确认。"
+          notes="视饭AI:主机共享 Native Alpha 8。Windows 低级键鼠 Hook 重构为轻量采集：Hook 回调只更新本地状态并立即入队，鼠标与键盘由两个独立工作线程完成序列化和 QUIC 发送，避免高轮询鼠标阻塞键盘 Hook；撤掉 1000Hz 硬推，改为 500Hz latest-only 鼠标通道；Windows 键盘 SendInput 使用标准 Virtual-Key 主路径与纯 Scan-Code 回退，并加入捕获、发送、接收、注入四段首包诊断。"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "视饭AI:主机共享 $TAG" --notes "$notes" --prerelease
           else
@@ -90,6 +90,7 @@ jobs:
           python native_v1/apply_alpha6_overlay.py native-upstream
           python native_v1/apply_alpha6_transport_fairness.py native-upstream
           python native_v1/apply_alpha7_real_input_fix.py native-upstream
+          python native_v1/apply_alpha8_realtime_input_worker.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
@@ -191,6 +192,7 @@ jobs:
           python native_v1/apply_alpha6_overlay.py native-upstream
           python native_v1/apply_alpha6_transport_fairness.py native-upstream
           python native_v1/apply_alpha7_real_input_fix.py native-upstream
+          python native_v1/apply_alpha8_realtime_input_worker.py native-upstream
           mkdir -p native-upstream/public
           cp assets/AI.png native-upstream/public/app-icon.png
           cp native_v1/THIRD_PARTY_NOTICES.md native-upstream/THIRD_PARTY_NOTICES-SHIFANAI.md
